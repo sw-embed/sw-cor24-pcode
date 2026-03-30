@@ -1,0 +1,324 @@
+PA24R — P-Code Assembler for COR24 (Rust)
+==========================================
+
+Purpose
+-------
+
+pa24r is a Rust p-code assembler that reads .spc (symbolic p-code) source
+and produces .p24 binary files.  It is the fast-path assembler in the
+COR24 p-code toolchain, replacing the COR24-hosted assembler (pasm.s in
+pv24a) for build-time assembly.
+
+pasm.s remains as a self-hosted test of the COR24 platform.  pa24r is the
+Rust-native equivalent for development iteration, pre-built binaries, and
+integration with web-dv24r (the browser-based debugger).
+
+
+Toolchain Context
+-----------------
+
+pa24r sits near the end of the pipeline:
+
+    Pascal source (.pas)
+        |
+        v
+    p24p (compiler) → .spc files (one per module)
+        |
+    Hand-coded .spc (runtime pr24p) ─+
+    User library .spc ───────────────+
+        |
+        v
+    pl24r (text-level linker)
+        concatenates all .spc, resolves cross-module references
+        |
+        v
+    one merged .spc file (all symbols resolved, metadata stripped)
+        |
+        v
+    *** pa24r (THIS PROJECT) ***
+        two-pass assembly
+        |
+        v
+    .p24 binary (self-contained, fully resolved)
+        |
+        v
+    loader → pvm (VM) → COR24 emulator
+
+Key: there is NO binary linker.  All linking is text-level in pl24r.
+By the time pa24r sees the .spc, every symbol is resolvable.  Forward
+references are handled by two-pass assembly.
+
+
+Architecture
+------------
+
+- Library crate (pa24r) with public API for programmatic use
+- Thin CLI binary (src/main.rs) for command-line use
+- Rust edition 2024, no external dependencies for the core library
+
+
+Input: .spc Format
+------------------
+
+Syntax:
+
+    ; line comments (semicolon to end of line)
+
+    ; Directives
+    .proc <name> <nargs>          begin procedure (nargs = parameter count)
+    .end                          end procedure
+    .data <name> <byte>, ...      data block (comma-separated bytes)
+    .global <name> <count>        global variable (count = 3-byte words)
+    .const <name> <value>         named constant
+
+    ; Metadata (from pl24r, skip/ignore silently)
+    .module <name>
+    .export <symbol>
+    .extern <symbol>
+    .endmodule
+
+    ; Labels
+    <name>:                       code label (colon suffix)
+
+    ; Instructions
+    <mnemonic>                    no-operand (dup, add, ret, halt)
+    <mnemonic> <operand>          with operand (push 42, call main, sys 1)
+
+Operands are either:
+- Integer literals: decimal (42, -1)
+- Symbol references: resolved to numeric values during assembly
+
+
+Output: .p24 Binary Format
+---------------------------
+
+Header (18 bytes):
+
+    Offset  Size   Field
+    0x00    4      magic: "P24\0" (0x50 0x32 0x34 0x00)
+    0x04    1      version (1)
+    0x05    3      entry_point (code offset of main, little-endian)
+    0x08    3      code_size (bytes, little-endian)
+    0x0B    3      data_size (bytes, little-endian)
+    0x0E    3      global_count (number of 3-byte words, little-endian)
+    0x11    1      flags (0x00; bit 0 reserved for has_debug)
+
+Body:
+
+    0x12          code bytes (code_size bytes)
+    0x12 + C      data bytes (data_size bytes)
+
+All multi-byte values are little-endian.  3-byte fields match COR24 word
+size (24-bit).
+
+
+P-Code Instruction Set
+----------------------
+
+Encoding formats:
+
+    NONE    1 byte    [op]
+    IMM8    2 bytes   [op, imm8]
+    IMM24   4 bytes   [op, lo, mid, hi]  (little-endian 24-bit)
+    D8_A24  5 bytes   [op, d8, lo, mid, hi]
+    D8_O8   3 bytes   [op, d8, o8]
+
+Complete opcode table (ground truth: pvm.s in pv24a):
+
+Stack Operations:
+    0x00  halt     NONE     Stop execution
+    0x01  push     IMM24    Push 24-bit immediate
+    0x02  push_s   IMM8     Push 8-bit immediate (zero-extended)
+    0x03  dup      NONE     Duplicate TOS
+    0x04  drop     NONE     Discard TOS
+    0x05  swap     NONE     Swap top two
+    0x06  over     NONE     Copy second to top
+
+Arithmetic:
+    0x10  add      NONE     a + b
+    0x11  sub      NONE     a - b
+    0x12  mul      NONE     a * b
+    0x13  div      NONE     a / b (trap on zero)
+    0x14  mod      NONE     a mod b (trap on zero)
+    0x15  neg      NONE     -a
+
+Comparison (push 1 for true, 0 for false):
+    0x20  eq       NONE     a == b
+    0x21  ne       NONE     a != b
+    0x22  lt       NONE     a < b
+    0x23  le       NONE     a <= b
+    0x24  gt       NONE     a > b
+    0x25  ge       NONE     a >= b
+
+Logic:
+    0x26  and      NONE     Bitwise AND
+    0x27  or       NONE     Bitwise OR
+    0x28  not      NONE     Bitwise NOT
+
+Control Flow:
+    0x30  jmp      IMM24    Unconditional jump
+    0x31  jz       IMM24    Jump if zero
+    0x32  jnz      IMM24    Jump if not zero
+    0x33  call     IMM24    Call procedure
+    0x34  ret      NONE     Return (no value)
+    0x35  ret_v    NONE     Return with value
+    0x36  trap     IMM8     User trap (diagnostic)
+
+Frame Management:
+    0x40  enter    IMM8     Set up frame, N locals
+    0x41  leave    NONE     Tear down frame
+    0x42  loadl    IMM8     Load local variable
+    0x43  storel   IMM8     Store local variable
+    0x44  loada    IMM8     Load argument
+    0x45  storea   IMM8     Store argument
+
+Memory (Global + Indirect):
+    0x50  load     NONE     Load word from [TOS]
+    0x51  store    NONE     Store word to [TOS]
+    0x52  loadb    NONE     Load byte from [TOS]
+    0x53  storeb   NONE     Store byte to [TOS]
+    0x54  loadg    IMM24    Load global by offset
+    0x55  storeg   IMM24    Store global by offset
+    0x56  addrg    IMM24    Push address of global
+    0x57  addrl    IMM8     Push address of local
+
+Nonlocal Access (Nested Procedures):
+    0x58  loadn    D8_O8    Load nonlocal (depth, offset)
+    0x59  storen   D8_O8    Store nonlocal (depth, offset)
+    0x5A  calln    D8_A24   Call nonlocal (depth, address)
+
+System Calls:
+    0x60  sys      IMM8     System call by ID
+
+    sys IDs:
+        0  halt     Stop execution
+        1  putc     Print TOS as character
+        2  getc     Read character, push onto stack
+        3  LED      Set LED register
+        4  alloc    Allocate N bytes from heap
+        5  free     Free allocation (no-op in bump allocator)
+
+Address semantics:
+- jmp/jz/jnz/call operands are offsets within the code segment
+- The VM resolves: effective_addr = code_base + operand
+- Data refs via push are offsets into the data segment (after code in buffer)
+- Global refs via loadg/storeg/addrg are offsets from GP register
+
+
+Assembly Algorithm
+------------------
+
+Two-pass, same approach as pasm.s:
+
+Pass 1 — Symbol Collection:
+    1. Lex input into tokens (newlines, identifiers, numbers, directives,
+       labels, commas)
+    2. Parse directives and instructions
+    3. For .proc: record name → current code offset
+    4. For labels: record name → current code offset
+    5. For .data: record name → current data offset, accumulate bytes
+    6. For .global: record name → current global offset, advance by count*3
+    7. For .const: record name → value
+    8. For instructions: advance code offset by instruction size
+    9. Track main proc offset as entry_point
+    10. Skip .module/.export/.extern/.endmodule silently
+
+Pass 2 — Code Emission:
+    1. Reset code offset to 0
+    2. For each instruction:
+       - Emit opcode byte
+       - Resolve operand (symbol lookup or literal)
+       - Emit operand bytes per encoding format
+    3. Collect data bytes (emitted after code in .p24)
+
+
+Public API
+----------
+
+    pub fn assemble(source: &str) -> AssemblyResult;
+    pub fn assemble_to_p24(source: &str) -> Result<Vec<u8>, Vec<AssemblyError>>;
+    pub fn load_p24(binary: &[u8]) -> Result<LoadedImage, LoadError>;
+
+    pub struct AssemblyResult {
+        pub code: Vec<u8>,
+        pub data: Vec<u8>,
+        pub entry_point: u32,
+        pub global_count: u32,
+        pub errors: Vec<AssemblyError>,
+    }
+
+    pub struct AssemblyError {
+        pub line: usize,
+        pub message: String,
+    }
+
+    pub struct LoadedImage {
+        pub entry_point: u32,
+        pub code: Vec<u8>,
+        pub data: Vec<u8>,
+        pub global_count: u32,
+    }
+
+
+CLI Interface
+-------------
+
+    pa24r [OPTIONS] <input.spc> -o <output.p24>
+
+    Options:
+      -o, --output <file>    Output .p24 file (required)
+      -v, --verbose          Print assembly stats
+      --dump                 Hex dump of output
+
+
+Error Handling
+--------------
+
+    - Unknown mnemonic → error with line number
+    - Unresolved symbol → error with line number and name
+    - Duplicate symbol → error with both locations
+    - Missing main proc → error
+    - Operand out of range → error
+    - Unknown directives → silently skip (metadata from pl24r)
+
+
+Test Plan
+---------
+
+    1. Unit tests: each opcode encodes correctly
+    2. Integration: assemble test .spc files, verify .p24 bytes
+    3. Round-trip: assemble → load_p24 → compare segments
+    4. Error tests: each error condition produces clear message
+    5. Compatibility: assemble hello.spc with pa24r and pasm.s,
+       compare bytecode byte-for-byte
+
+
+Reference Files
+---------------
+
+    ~/github/sw-vibe-coding/pv24a/pasm.s       COR24 assembler (algorithm reference)
+    ~/github/sw-vibe-coding/pv24a/pvm.s        VM (opcode ground truth)
+    ~/github/sw-vibe-coding/pv24a/pvmasm.s     Integrated assembler+VM
+    ~/github/sw-vibe-coding/pv24a/hello.spc    Test: Hello World
+    ~/github/sw-vibe-coding/pv24a/tests/*.spc  Test: arithmetic, globals, loops
+    ~/github/softwarewrighter/web-dv24r/demos/*.spc  Demo programs
+    ~/github/softwarewrighter/web-dv24r/docs/linking-loading.md  Toolchain architecture
+
+
+Consumers
+---------
+
+    web-dv24r   calls assemble_to_p24() from build.rs for demo pre-assembly
+    cor24-run   (future) command-line .p24 runner
+    CLI users   manual: pa24r input.spc -o output.p24
+
+
+Related Projects
+----------------
+
+    ~/github/softwarewrighter/p24p      Pascal compiler (emits .spc)
+    ~/github/softwarewrighter/pr24p     Pascal runtime (.spc sources)
+    ~/github/softwarewrighter/pl24r     Text-level .spc linker
+    ~/github/sw-vibe-coding/pv24a       P-code VM + assembler (COR24 asm)
+    ~/github/sw-embed/cor24-rs          COR24 emulator
+    ~/github/softwarewrighter/web-dv24r P-code debugger (web UI)

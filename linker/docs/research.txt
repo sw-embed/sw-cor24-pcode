@@ -1,0 +1,2061 @@
+
+
+
+
+So I have a p-code VM running on an emulator and I'm building a Pascal compiler that compiles Pascal runtime routines (written in Pascal) to a p-code file and compiles an App (demo or test) to a p-code file.  What is the mechanism for loading, "linking," and running these?  Can a user also compile a Pascal library (user library) and combine that?  What are the conventions? Is there actual module supporting syntax?  Do compiled p-code contain linking info?  How would a p-code emulator handle this?  Is it as simple as concatenating all the p-code files into one file, or does the emulator need to manage and load (and link?) each p-code file at start-up?  i.e. take a list of p-code files at startup? 
+
+You have:
+
+a Pascal compiler that emits p-code
+
+a p-code VM/emulator
+
+runtime routines written in Pascal and compiled to p-code
+
+an application/demo/test also compiled to p-code
+
+possibly user libraries compiled separately
+
+So the real design question is not just “how do I load files,” but:
+
+what unit of compilation is
+
+what unit of linking is
+
+where symbol resolution happens
+
+what the VM is expected to know
+
+whether separate compilation is worth the complexity yet
+
+High-level answer
+For an educational Pascal-on-p-code system, the cleanest progression is:
+
+Phase 1
+Use a linker outside the VM.
+
+Compile each source file/module/library to an object-like p-code file
+
+Run a p-code linker
+
+Produce one final executable p-code image
+
+The VM loads and runs that one fully linked image
+
+That is the simplest, most conventional design for your stage.
+
+Phase 2
+Add separate compilation units with symbol tables/import-export metadata.
+
+runtime.pco
+
+mylib.pco
+
+app.pco
+
+linker resolves references
+
+outputs app.px or app.exe.pcode
+
+Phase 3
+Only later, if you want, support dynamic loading or VM-side loading of multiple p-code files.
+
+That is usually not the first thing to build.
+
+Recommended architecture
+1. Treat compiled p-code files in two categories
+A. Relocatable p-code object
+This is like .o in C toolchains.
+
+It contains:
+
+p-code instructions
+
+constant data
+
+static/global variable layout
+
+symbol definitions
+
+unresolved external references
+
+relocation/fixup records
+
+optionally debug info
+
+Example:
+
+runtime.pco
+
+strings.pco
+
+math.pco
+
+app.pco
+
+These are not directly runnable unless they are fully self-contained.
+
+B. Executable p-code image
+This is what the VM runs.
+
+It contains:
+
+one final instruction stream
+
+one merged global/static data layout
+
+fully resolved call targets
+
+entry point
+
+no unresolved references
+
+Example:
+
+demo.px
+
+The VM should ideally load only this form at first.
+
+What “linking” means here
+In this context, linking means:
+
+combine separately compiled units
+
+resolve external procedure/function references
+
+assign final addresses or indices
+
+merge global/static data areas
+
+set entry point
+
+optionally strip or preserve debug info
+
+So if app.pco calls WriteLn from runtime.pco, the linker decides where WriteLn lives in the final image and patches the call site.
+
+Should the VM load multiple p-code files directly?
+Best answer: not initially
+You can design a VM that loads a list of p-code files and links them at startup, but that pushes linker complexity into the emulator. That usually makes the VM more complicated than it needs to be.
+
+Better split of responsibilities
+Compiler
+Produces relocatable p-code objects.
+
+Linker
+Combines them into one executable p-code image.
+
+VM
+Loads one executable image and runs it.
+
+That separation keeps each component simpler and more testable.
+
+Is concatenation enough?
+Usually: no
+Simple concatenation only works if all of these are true:
+
+there are no unresolved external references
+
+all addresses are position-independent or symbolic
+
+there is no duplicate symbol conflict
+
+globals/statics do not need relocation
+
+call/jump targets are already correct
+
+initialization order is trivial
+
+That is rarely sufficient once you have more than one separately compiled unit.
+
+So:
+
+Concatenation is okay for a very early prototype
+
+but it is not real linking
+
+If you do concatenation as a bootstrap step, use it only with very strict conventions.
+
+Practical conventions that work well
+Option 1: Single-image convention
+This is the easiest bootstrap.
+
+Build flow
+Compile runtime Pascal sources together
+
+Compile app source
+
+Link into one executable p-code image
+
+VM loads that one file
+
+Example:
+
+pascalc runtime/*.pas -> runtime.pco
+pascalc app.pas -> app.pco
+pclink runtime.pco app.pco -> demo.px
+pcvm demo.px
+For user libraries:
+
+pascalc mylib.pas -> mylib.pco
+pclink runtime.pco mylib.pco app.pco -> demo.px
+pcvm demo.px
+This is the model I recommend.
+
+Option 2: VM startup with multiple object files
+Possible, but more complex.
+
+pcvm runtime.pco mylib.pco app.pco
+In this model, the VM must:
+
+read all modules
+
+build a global symbol table
+
+resolve imports/exports
+
+assign final code/data addresses
+
+relocate call/data references
+
+identify entry point
+
+possibly run initialization sections
+
+That means your VM is also acting as a linker/loader.
+
+This is valid, but I would only do it if your educational goal includes OS/loader/linker design.
+
+What should be inside a relocatable p-code file?
+A good minimal format has sections like these:
+
+Header
+magic number
+
+version
+
+flags
+
+module name
+
+Code section
+p-code instructions
+
+Constant section
+literal strings, numeric constants, typed constants if needed
+
+Static/global data section
+size required
+
+optional initial values
+
+Export table
+Symbols defined by this unit:
+
+procedures/functions
+
+globals/constants, if exported
+
+module name
+
+Import table
+Symbols referenced but not defined in this unit.
+
+Relocation/fixup table
+Places in code/data that must be patched after final layout is known.
+
+Optional debug table
+source file name
+
+line mappings
+
+procedure boundaries
+
+local symbol info
+
+How should calls work?
+There are several workable conventions.
+
+Approach A: Symbolic calls, fixed up by linker
+Compiler emits something like:
+
+CALL_EXTERN "WriteLn"
+Then linker changes it to:
+
+CALL <absolute-or-module-relative-address>
+This is the classic approach.
+
+Approach B: Call by procedure index
+Compiler emits import slot references:
+
+CALL_IMPORT 3
+The object file’s import table says slot 3 = Runtime.WriteLn.
+
+Linker resolves import slot 3 to final procedure index or address.
+
+This is often cleaner for a VM.
+
+Approach C: Fully qualified module/function references
+Example source-level concept:
+
+System.WriteLn
+
+Math.Sin
+
+MyLib.Foo
+
+Compiler records these as qualified external symbols.
+
+This is useful once modules are introduced.
+
+How should globals/statics work?
+You need a convention for non-local storage.
+
+Simplest convention
+The linker creates one global data area for the final executable.
+
+Each module contributes:
+
+size of globals
+
+initial values if any
+
+export names for globals that are visible externally
+
+Compiler references module globals through relocatable offsets.
+
+Linker assigns final offsets.
+
+VM exposes one “global memory” region to the program.
+
+That is much easier than trying to maintain separate memory regions per p-code file.
+
+Pascal-specific question: are there modules?
+Historically: it depends
+Classic Pascal itself did not have a single universal standard module system that everyone used the same way.
+
+Different Pascal families added different compilation-unit concepts:
+
+UCSD Pascal: units / segments / libraries in its own ecosystem
+
+Turbo Pascal: unit
+
+Modula-2: separate module system, strongly related in spirit
+
+ISO Pascal: less practical module support than later dialects
+
+So for your system, you have freedom.
+
+Recommendation
+Do not wait for a perfect historical module system.
+
+Define your own minimal module/unit convention first.
+
+For example:
+
+unit Strings;
+
+interface
+  procedure PutString(s: PChar);
+  function Length(s: PChar): Integer;
+
+implementation
+  procedure PutString(s: PChar);
+  begin
+    ...
+  end;
+
+  function Length(s: PChar): Integer;
+  begin
+    ...
+  end;
+end.
+and in the app:
+
+program Demo;
+
+uses Strings, Runtime;
+
+begin
+  ...
+end.
+Even if your initial compiler does not support full Pascal unit syntax, you can still model the same semantics internally.
+
+Do compiled p-code files contain linking info?
+For separate compilation, they should.
+
+At minimum they need:
+
+module name
+
+exported symbol names
+
+imported symbol names
+
+fixup records
+
+section sizes
+
+Without that, the linker or loader has nothing to work with.
+
+If you emit only raw p-code instructions with no metadata, then separate compilation becomes hard or impossible unless you impose rigid conventions such as numeric library slot tables.
+
+Minimal viable design choices
+Here are three realistic designs.
+
+Design 1: Monolithic compile
+Compile everything together in one compiler invocation.
+
+Pros
+simplest by far
+
+no linker needed
+
+ideal for first working system
+
+Cons
+no real separate compilation
+
+slow rebuilds later
+
+awkward for reusable libraries
+
+Flow
+pascalc runtime.pas mylib.pas app.pas -> demo.px
+pcvm demo.px
+This is great for day 1.
+
+Design 2: Separate compile + offline linker
+This is the sweet spot.
+
+Pros
+clean architecture
+
+reusable libraries
+
+conventional
+
+VM remains simple
+
+easy to debug
+
+Cons
+must design object format and linker
+
+more moving parts than monolithic build
+
+Flow
+pascalc -c runtime.pas -> runtime.pco
+pascalc -c mylib.pas -> mylib.pco
+pascalc -c app.pas -> app.pco
+pclink runtime.pco mylib.pco app.pco -> demo.px
+pcvm demo.px
+This is what I would build.
+
+Design 3: VM as loader/linker
+VM takes multiple files.
+
+Pros
+interesting if you want a loader-oriented architecture
+
+convenient command-line UX
+
+groundwork for future dynamic loading
+
+Cons
+VM becomes more complex
+
+harder to test/link/debug cleanly
+
+mixes concerns
+
+Flow
+pcvm runtime.pco mylib.pco app.pco
+Do this later, if at all.
+
+Best bootstrap strategy
+Stage 0: No modules, no separate linking
+Support:
+
+one program
+
+runtime included automatically
+
+one output executable image
+
+This gets you moving quickly.
+
+Stage 1: Relocatable object files
+Compiler emits .pco with:
+
+code
+
+consts
+
+exports
+
+imports
+
+relocations
+
+Stage 2: Offline linker
+Linker:
+
+merges modules
+
+resolves imports
+
+produces .px
+
+Stage 3: Source-level uses or unit
+Add Pascal syntax for separate compilation.
+
+Stage 4: Library archives
+Later you can support something like:
+
+rtl.pca = runtime library archive
+
+math.pca
+
+strings.pca
+
+The linker pulls in only needed modules.
+
+Library conventions
+A user library absolutely can be supported.
+
+Common convention
+A library is not one magical special thing. It is either:
+
+A set of object modules
+mylib/
+  strings.pco
+  fileutil.pco
+  mathutil.pco
+or
+
+An archive
+mylib.pca
+containing multiple modules plus an index.
+
+For an educational system, start with plain lists of object files. Archive support can come later.
+
+Name resolution conventions
+You need rules for duplicate names and namespaces.
+
+Recommended convention
+Use qualified symbol names internally:
+
+Runtime.WriteLn
+
+Strings.Length
+
+App.Main
+
+Even if source code can refer to WriteLn unqualified after uses Runtime, the linker should store fully qualified names.
+
+That avoids symbol collisions and simplifies error messages.
+
+Entry-point convention
+The executable image needs a well-defined start symbol.
+
+Examples:
+
+Main
+
+Program.main
+
+App.$main
+
+__start
+
+I recommend a hidden compiler-generated entry point:
+
+program unit exports Program.$main
+
+linker sets executable entry point to that
+
+runtime can optionally wrap it with startup/teardown
+
+For example:
+
+__start:
+  call Runtime.Init
+  call Program.$main
+  call Runtime.Exit
+  halt
+This is a clean separation.
+
+Runtime initialization conventions
+If units/modules can have initialized globals or setup code, you will eventually want:
+
+per-module init routine
+
+init order based on link order or dependency order
+
+optional finalization later
+
+Minimal convention:
+
+each module may export hidden Module.$init
+
+linker builds startup sequence calling them before main
+
+You do not need this on day 1, but plan space for it.
+
+What should the emulator do?
+Minimal emulator responsibilities
+The emulator/VM should:
+
+load one executable p-code image
+
+allocate VM memory regions
+
+set PC, SP, FP, globals base
+
+run interpreter loop
+
+provide host services / memory-mapped I/O as needed
+
+optionally expose debug/disassembly info
+
+What it should not do initially
+symbol resolution
+
+archive scanning
+
+import/export matching
+
+relocation across multiple objects
+
+dependency selection
+
+That is linker work.
+
+If you really want VM-side multi-file loading
+A workable startup convention would be:
+
+pcvm runtime.pco mylib.pco app.pco
+VM startup algorithm:
+
+Read all module headers
+
+Verify versions / VM ABI compatibility
+
+Build export symbol table
+
+Check for duplicates/conflicts
+
+Build combined code/data layout
+
+Apply relocations
+
+Identify entry point
+
+Run module init routines
+
+Run main
+
+This is doable, but it is essentially a linker plus loader in one place.
+
+A neat compromise is:
+
+keep a reusable link/load library
+
+CLI linker uses it offline
+
+VM can optionally use the same code for convenience mode
+
+But architecturally, still think of it as linker logic, not core interpreter logic.
+
+Suggested file format family
+You might define:
+
+File type	Purpose
+.pco	relocatable p-code object
+.px	executable p-code image
+.pca	p-code archive/library
+.pdb or embedded debug section	source/debug metadata
+That makes the pipeline legible.
+
+Very practical recommendation for your project
+Given where you are, I would adopt this exact convention:
+
+Compiler outputs relocatable modules
+Each Pascal source file that is meant to be separately compiled becomes one module object:
+
+runtime.pas  -> runtime.pco
+mylib.pas    -> mylib.pco
+app.pas      -> app.pco
+Each .pco contains:
+
+module name
+
+code section
+
+const section
+
+static data size
+
+export table
+
+import table
+
+relocation records
+
+Linker produces one executable
+pclink runtime.pco mylib.pco app.pco -o demo.px
+Linker:
+
+resolves imports against exports
+
+merges code/data
+
+assigns final addresses
+
+creates startup stub
+
+sets entry point
+
+VM runs one file
+pcvm demo.px
+That is the cleanest convention.
+
+What syntax should Pascal have?
+You asked whether there is actual module syntax. Yes, many Pascal systems had one, but you can choose how much to implement now.
+
+Easiest path
+Start with a very small uses model.
+
+App
+program Demo;
+uses Runtime, MyLib;
+begin
+  MainDemo;
+end.
+Library-like module
+You can initially cheat and compile non-program files as named modules with exported public symbols, even before full interface/implementation syntax exists.
+
+Later add proper unit syntax.
+
+Good staged plan
+First
+Internal module metadata only.
+
+Next
+Source-level uses.
+
+Later
+Full unit ... interface ... implementation.
+
+Benefits and risks of the different choices
+Concatenate-only bootstrap
+Benefits
+trivial implementation
+
+fastest path to “something runs”
+
+Risks
+brittle
+
+no true external symbol resolution
+
+hard to grow
+
+Offline linker
+Benefits
+clean abstraction
+
+supports runtime + user libs naturally
+
+closer to real toolchains
+
+simpler VM
+
+Risks
+requires object format and relocations
+
+more up-front design
+
+VM-side loader/linker
+Benefits
+flexible startup
+
+can evolve toward dynamic loading
+
+Risks
+emulator becomes bloated
+
+harder debugging
+
+mixes concerns
+
+My concrete recommendation
+For your Pascal-on-p-code system:
+
+Adopt these conventions
+1. Separate compile output format
+A .pco module is relocatable, not directly runnable.
+
+2. One offline linker
+The linker combines:
+
+runtime module(s)
+
+optional user library module(s)
+
+app module
+
+into one .px executable image.
+
+3. VM only runs executable images
+The VM should take exactly one final executable file at first.
+
+4. Support libraries as lists of modules first
+Do not implement archive libraries until later.
+
+5. Use qualified symbol names internally
+Even if source syntax is simpler.
+
+6. Add uses first, full unit later
+This gives you practical modularity without overcommitting to a big front-end syntax project.
+
+A good first ABI/convention set
+Here is a simple starting point.
+
+Each module defines:
+module name
+
+exported procedures/functions
+
+imported procedures/functions
+
+static data size
+
+code bytes
+
+const bytes
+
+relocation entries
+
+Linker rules:
+module names must be unique
+
+exported symbol names are internally qualified as Module.Symbol
+
+unresolved imports are errors
+
+duplicate exports are errors
+
+final image gets:
+
+code segment
+
+const segment
+
+global/static segment
+
+entry point
+
+optional debug map
+
+VM rules:
+load final image
+
+initialize stack/global pointers
+
+call __start
+
+execute until HALT
+
+Direct answer to your main question
+Is it as simple as concatenating all the p-code files into one file?
+Only for a very temporary bootstrap, and only if your compiler emits code under strict assumptions. In general, no.
+
+Does the emulator need to manage and load/link each p-code file at startup?
+It can, but it is better not to at first. Put that logic in a separate linker.
+
+Can a user compile a Pascal library and combine that?
+Yes. Treat user libraries exactly like runtime modules: compile to relocatable p-code objects, then link them with the app.
+
+Are there conventions and module syntax?
+Yes historically, but they varied by Pascal system. For your system, define a small unit/module convention and grow it incrementally.
+
+Do compiled p-code files contain linking info?
+They should, if you want separate compilation. At minimum: exports, imports, relocations, module name, section sizes.
+
+Suggested next implementation order
+Define .pco object format
+
+Emit exports/imports/relocations from compiler
+
+Write tiny linker
+
+Define .px executable format
+
+Keep VM focused on loading/running .px
+
+Add source-level uses
+
+Later add proper Pascal unit syntax
+
+If you want, I can next draft a minimal .pco / .px file format and a tiny linker algorithm tailored to an educational Pascal p-code VM.
+
+
+I'm leaning towards the Turbo Pascal approach (if I understand it),  The compiler would emit linking metadata in ".spc" (p-code) files.  A linker would combine the app with user and system (runtime) files into some ".xxx" loadable file for the VM on emulator.  the s in spc stands for source (spc is a text, not binary format).  The ".xxx" (to be named) file is also text, I think, probably loaded through a UART into the emulator.  Sounds good?  So my question is, what language should I write the linker in?  The compiler is in C.  The VM and emulator are in Asembler.  The runtime is in Pascal. I'm leaning towards C, however, there is no file system, so the linker needs to take a stream of text (possibly delimited) to produce the output text.
+
+Yes — that sounds like a good direction.
+
+You are converging on a sensible split:
+
+Pascal compiler emits textual .spc module files
+
+each .spc contains:
+
+p-code text
+
+symbol/import/export metadata
+
+relocation/fixup metadata
+
+a linker combines:
+
+app
+
+user libraries
+
+system/runtime modules
+
+linker emits one final loadable text image
+
+VM/emulator consumes that final text image, likely over UART
+
+That is a clean architecture, especially for an educational system without a filesystem.
+
+Short answer
+Write the linker in C.
+
+That is the best choice for your current stage.
+
+Not Pascal, not assembler.
+
+Why C is the right choice
+1. It matches the compiler toolchain
+Your compiler is already in C, which means:
+
+you already have a host-side C build flow
+
+your linker naturally belongs to the same host toolchain
+
+compiler and linker can share:
+
+symbol structures
+
+parsing utilities
+
+module-format constants
+
+diagnostics style
+
+test harnesses
+
+That is a major practical benefit.
+
+2. The linker is fundamentally a host tool
+The linker is not really part of the target runtime.
+
+It is a build-time tool.
+
+So it should run on your development machine, where you already have:
+
+files
+
+memory
+
+strings
+
+sorting/searching
+
+test infrastructure
+
+Even if the target machine has no filesystem, the linker does not need to care. The linker runs before the VM ever sees the program.
+
+So:
+
+target has no filesystem
+
+host does have one
+
+linker should be a host-side program
+
+That strongly favors C.
+
+3. A linker is mostly text parsing, symbol tables, and fixups
+Those jobs are much easier in C than in assembler.
+
+A linker typically needs:
+
+line/token parsing
+
+string comparison
+
+maps/tables of symbols
+
+lists of unresolved references
+
+duplicate symbol detection
+
+multiple passes
+
+good error reporting with module/line info
+
+Assembler is a poor fit for that unless the point of the exercise is specifically “write a linker in assembly.”
+
+C is much better.
+
+4. Pascal is the wrong bootstrap layer right now
+You could imagine eventually writing the linker in Pascal, but right now that creates circular dependency risks:
+
+compiler needed to compile Pascal linker
+
+linker needed to combine runtime/modules
+
+Pascal environment not yet mature
+
+linker is part of the infrastructure needed before Pascal is fully comfortable
+
+So for now, Pascal should stay on the target-language side, not the toolchain-implementation side.
+
+Later, once your Pascal system is mature, rewriting parts of tooling in Pascal could be an interesting self-hosting milestone.
+
+But not first.
+
+Important architecture point
+You said:
+
+there is no file system, so the linker needs to take a stream of text (possibly delimited) to produce the output text
+
+That is fine, but this is really two separate issues:
+
+Build-time representation
+How the compiler and linker exchange modules.
+
+Load-time transport
+How the final image gets into the emulator/VM.
+
+Those do not need to be the same thing.
+
+You can absolutely do this:
+
+On the host
+compiler reads files
+
+linker reads files or stdin stream
+
+linker emits one final text image
+
+For loading into emulator
+host sends final linked text image over UART
+
+The lack of filesystem on the target does not force the linker itself to be stream-only internally.
+
+My recommendation
+Write the linker in portable host-side C, but design it with a clean input abstraction so it can support both:
+
+normal files
+
+stdin / delimited stream input
+
+That gives you the best of both worlds.
+
+Best design approach
+1. Make the linker a host CLI tool in C
+Example:
+
+spclink runtime.spc userlib.spc app.spc -o app.pxe
+or
+
+cat runtime.spc userlib.spc app.spc | spclink --stream -o app.pxe
+The tool can support both models.
+
+2. Define a textual module format that is stream-friendly
+Since .spc is text, make each module self-delimiting.
+
+For example:
+
+MODULE Runtime
+VERSION 1
+EXPORT WriteLn
+EXPORT Exit
+IMPORT PutChar
+CODE
+  ...
+ENDCODE
+RELOCS
+  ...
+ENDRELOCS
+ENDMODULE
+Then concatenating multiple modules into one stream is easy:
+
+MODULE Runtime
+...
+ENDMODULE
+MODULE UserLib
+...
+ENDMODULE
+MODULE App
+...
+ENDMODULE
+Your linker can read until ENDMODULE, then start the next.
+
+This is much better than relying on arbitrary delimiter characters.
+
+3. Emit a final text executable format
+For example, not .xxx, but something like:
+
+.pxe = p-code executable
+
+.pxt = p-code text executable
+
+.run
+
+.img
+
+.pcm
+
+.pvm
+
+.pex
+
+I would avoid .xxx, obviously, as placeholder only.
+
+A nice pair might be:
+
+.spc = symbolic p-code module
+
+.pex = p-code executable text image
+
+or
+
+.spc = source-like p-code object
+
+.pxe = p-code executable
+
+That feels coherent.
+
+What the linker should do
+Your linker in C should probably perform these steps.
+
+Pass 1: Parse modules
+Read all modules from files or stream:
+
+module name
+
+exports
+
+imports
+
+code records
+
+data records
+
+relocation/fixup records
+
+optional entry marker
+
+Pass 2: Build global symbol table
+For every export:
+
+record symbol name
+
+defining module
+
+relative address/index
+
+Check for:
+
+duplicate definitions
+
+reserved names
+
+missing entry point
+
+Pass 3: Assign final layout
+Compute final positions for:
+
+each module’s code
+
+each module’s constants/data
+
+entry point
+
+optional init routines
+
+Pass 4: Resolve imports and apply fixups
+For each unresolved reference:
+
+find symbol in global table
+
+compute final target
+
+patch output representation
+
+Pass 5: Emit final linked text image
+Output one text image in the format the VM loader understands.
+
+Streaming input is not a problem
+You do not need a filesystem on the target, and you do not even strictly need one on the linker input side if you do not want it.
+
+A stream-oriented C linker is easy enough.
+
+Two good models
+Model A: linker reads named files
+Simplest for development.
+
+spclink runtime.spc strings.spc app.spc > app.pex
+Model B: linker reads one concatenated stream
+Useful for pipe-based workflows and later automation.
+
+(cat runtime.spc; cat strings.spc; cat app.spc) | spclink --stream > app.pex
+If each module is explicitly delimited with MODULE / ENDMODULE, this is straightforward.
+
+Do not force the linker output to be too low-level too early
+Since the final output is text sent over UART, you have options.
+
+Option 1: final output is already VM-ready p-code text
+The VM just loads it and runs.
+
+Pros
+simplest VM
+
+linker fully resolves everything
+
+very conventional
+
+Cons
+less flexibility later
+
+This is probably the best first design.
+
+Option 2: final output is still somewhat symbolic
+The VM resolves some references at load time.
+
+Pros
+more flexible
+
+Cons
+VM becomes partly a linker/loader
+
+I would avoid this initially.
+
+Language choice comparison
+C
+Benefits
+easiest fit with your compiler
+
+excellent for host-side tooling
+
+easy parsing and data structures
+
+easy testing
+
+easy portability
+
+easy integration with build scripts
+
+Risks
+manual memory management
+
+must be careful with parser robustness
+
+Still the best choice.
+
+Assembler
+Benefits
+runs anywhere eventually
+
+educational
+
+Risks
+terrible for text parsing and symbol management
+
+harder to debug
+
+much slower to evolve
+
+not worth it here
+
+Not recommended.
+
+Pascal
+Benefits
+nice eventual self-hosting milestone
+
+dogfooding your language
+
+Risks
+bootstrap circularity
+
+you are not there yet
+
+linker is too foundational to depend on immature Pascal tooling
+
+Good later, not now.
+
+Rust
+Since you personally are strong in Rust, this would also be a very strong technical choice on the host side.
+
+Benefits
+safer parsing/data handling
+
+excellent enums/AST modeling
+
+very good testability
+
+Risks
+does not match current compiler implementation language
+
+harder to share code with your C compiler
+
+another host-toolchain dependency
+
+If this were a greenfield host toolchain, I might seriously consider Rust. But given your compiler is already in C, C still wins on cohesion.
+
+A very practical recommendation
+Write the linker in C as a standalone host tool
+Structure it like this:
+
+Front-end parser
+Reads textual .spc modules from:
+
+files
+
+stdin stream
+
+Internal representation
+Something like:
+
+typedef struct {
+    char *name;
+    Vector exports;
+    Vector imports;
+    Vector code_lines;
+    Vector relocs;
+    int is_program;
+} SpcModule;
+Linker core
+Pure functions/logic for:
+
+collecting modules
+
+building symbol table
+
+assigning addresses
+
+applying fixups
+
+generating final image
+
+Output writer
+Writes final linked text format for UART loading.
+
+This separation will make the tool much easier to evolve.
+
+Conventions I would strongly suggest
+1. Use explicit module boundaries in text
+Example:
+
+MODULE App
+TYPE program
+IMPORT Runtime.WriteLn
+EXPORT App.$main
+CODE
+  ...
+ENDCODE
+ENDMODULE
+This makes streaming trivial.
+
+2. Use qualified symbol names internally
+Even if user source says:
+
+uses Runtime;
+internally store:
+
+Runtime.WriteLn
+
+App.$main
+
+This avoids collisions.
+
+3. Keep linker metadata separate from raw code lines
+Do not try to infer imports/exports from code text if you can avoid it.
+
+Have explicit sections:
+
+EXPORTS
+  App.$main
+IMPORTS
+  Runtime.WriteLn
+RELOCS
+  CALL 17 Runtime.WriteLn
+CODE
+  ...
+Much easier to parse and debug.
+
+4. Make the final executable format simpler than .spc
+A module/object format may contain:
+
+imports
+
+exports
+
+relocs
+
+A final executable should contain little or none of that.
+
+Instead it should contain:
+
+header
+
+entry point
+
+final code/data
+
+maybe debug map
+
+That keeps VM loading simple.
+
+About the “no filesystem” issue
+I want to separate this clearly.
+
+Target side
+No filesystem is fine.
+
+The VM can load:
+
+UART stream
+
+ROM monitor input
+
+memory buffer
+
+serial loader
+
+No issue.
+
+Host side
+Your linker absolutely can still use files during development. There is no contradiction.
+
+Even if you later decide that your build pipeline feeds the linker entirely by pipe/stream, implementing the linker in C is still fine.
+
+So I would not let “no filesystem on target” drive you away from a normal host-side C linker.
+
+A good near-term workflow
+During development
+Use files because they are easier to inspect and test.
+
+pascalc -c runtime.pas > runtime.spc
+pascalc -c mylib.pas > mylib.spc
+pascalc -c app.pas > app.spc
+spclink runtime.spc mylib.spc app.spc > app.pex
+uartsend app.pex
+Later
+Support stream mode too:
+
+(
+  pascalc -c runtime.pas
+  pascalc -c mylib.pas
+  pascalc -c app.pas
+) | spclink --stream | uartsend
+That gives you both convenience and architectural purity.
+
+My opinion on naming
+Since .spc is text and object-like, I would pick something like:
+
+.spx for linked executable text
+
+.pex for Pascal executable p-code text
+
+.pim for p-code image
+
+.ldp for linked p-code
+
+Of those, I like:
+
+.spc = symbolic p-code compilation unit
+
+.spx = symbolic p-code executable
+
+or
+
+.spc = source p-code object
+
+.pex = p-code executable
+
+pex is probably clearer to humans.
+
+Bottom line
+Best answer
+Write the linker in C, as a host-side streaming-capable tool.
+
+Why
+Because:
+
+it fits naturally with your compiler
+
+linkers are build tools, not target runtime code
+
+C is much better than assembler for parsing and symbol resolution
+
+Pascal is too early in your bootstrap chain for this role
+
+stream input/output is easy to support in C
+
+Recommended design
+textual .spc modules with explicit MODULE ... ENDMODULE
+
+host-side C linker
+
+final linked text executable format such as .pex
+
+VM/emulator loads only the final executable text image over UART
+
+Best implementation stance
+Support both:
+
+file-based input for development
+
+stream-based input for automation and UART-oriented workflows
+
+That gives you the least pain now and the most flexibility later.
+
+If you want, I can next sketch a minimal textual .spc module format and a matching .pex executable format, plus the exact passes and data structures for a small C linker.
+
+
+To clarify, one of the "host" systems is COR24, an embedded system with no file system.  I built the bootstrap toolchain in Rust to run on Mac or Linux (C cross-compiler, assembler, emulator).  But I also built tools to run on the COR24: Macro Lisp, Forth, p-code assembler and p-code VM.  The Pascal compiler is in cor24 C with the runtime in Pascal both producing p-code.  So, I guess your suggestion to write the linker in Rust makes sense,  I was thinking ahead when more tools are hosted on COR24 itself, so prematurely constraining myself to UART in/out (like stdin/stdout).
+
+Yes — with that clarification, Rust is the better choice for the linker.
+
+Your environment is really two-hosted:
+
+Restated architecture
+Host A: development host
+Mac/Linux, with:
+
+Rust bootstrap toolchain
+
+cross C compiler
+
+assembler
+
+emulator
+
+richer tooling
+
+normal filesystem and process model
+
+Host B: self-hosted target
+COR24, with:
+
+no filesystem
+
+Macro Lisp
+
+Forth
+
+p-code assembler
+
+p-code VM
+
+Pascal compiler in COR24 C
+
+Pascal runtime in Pascal
+
+stream/UART-oriented workflows
+
+So the key design decision is:
+
+where should the first real linker live?
+
+and
+
+what constraints should its format assume now so it can later migrate onto COR24?
+
+Short answer
+Recommendation
+Write the first linker in Rust on Mac/Linux, but design:
+
+the module format
+
+the executable format
+
+and the linker core algorithm
+
+so they are not dependent on filesystems, only on streams of text records.
+
+That gives you:
+
+fast progress now
+
+good parser/data-structure ergonomics
+
+solid testing on Mac/Linux
+
+future portability to COR24
+
+no premature lock-in to file-based tooling
+
+no need to contort the design around UART-only operation today
+
+Why Rust now makes sense
+Earlier, C was reasonable because the compiler was in C. But with your clarification, the bigger picture matters more:
+
+1. The linker is part of the bootstrap/control plane, not the target runtime plane
+Your Pascal compiler running on COR24 is important, but the linker is still more naturally a toolchain orchestration component than a tiny embedded runtime primitive.
+
+For now, Rust on Mac/Linux is your strongest environment for building reliable infrastructure quickly.
+
+2. You already have a Rust-based bootstrap ecosystem
+That changes the weighting substantially.
+
+If your cross tools, assembler, and emulator are already in Rust, then the linker belongs naturally alongside them.
+
+That gives you:
+
+shared command-line style
+
+shared text parsing helpers
+
+shared tests
+
+shared integration with emulator/UART loaders
+
+shared code for record parsing/serialization if you choose
+
+So even though the Pascal compiler is in COR24 C, the build orchestration layer is already Rust-centric.
+
+3. Linkers are mostly parser + symbol-table + fixup engines
+Rust is an excellent fit for:
+
+tokenization and parsing
+
+structured enums for records
+
+ownership of symbol tables and module graphs
+
+deterministic error handling
+
+tests for malformed metadata
+
+avoiding memory corruption bugs in infrastructure tools
+
+A linker is exactly the kind of tool where Rust tends to feel good.
+
+4. You do not want to prematurely collapse “portable format” into “UART-only CLI semantics”
+This is the most important part of your clarification.
+
+You said you were:
+
+prematurely constraining myself to UART in/out (like stdin/stdout)
+
+I think that is exactly right.
+
+The important thing is not “stdin/stdout everywhere.”
+
+The important thing is:
+
+define a transport-neutral textual object/executable format
+That means the same module or executable can be:
+
+stored in a file
+
+concatenated in a pipe
+
+sent over UART
+
+embedded in ROM
+
+pasted into a monitor
+
+generated by Lisp/Forth/Pascal tools on COR24
+
+The format should be independent of transport.
+
+That is the right abstraction boundary.
+
+Strong recommendation: separate these concerns
+You want to avoid mixing three different layers.
+
+Layer 1: object/executable representation
+What .spc and final executable text look like.
+
+Layer 2: linker algorithm
+How imports/exports/fixups are resolved.
+
+Layer 3: transport
+How bytes/characters move:
+
+file
+
+pipe
+
+UART
+
+memory buffer
+
+monitor console
+
+If you keep those cleanly separated, you can write the first linker in Rust without harming your eventual COR24 self-hosting story at all.
+
+Recommended path
+Phase 1: Rust linker on Mac/Linux
+Build a robust linker quickly.
+
+Inputs:
+
+.spc text modules
+
+from files, stdin, or memory buffers
+
+Output:
+
+linked executable text image
+
+Loader:
+
+existing emulator UART loader or direct host injection
+
+This gets you productive immediately.
+
+Phase 2: stabilize the textual object format
+Once .spc and the final executable format are stable, they become the real ABI.
+
+That matters more than the linker implementation language.
+
+If the format is stable and transport-neutral, later you can reimplement the linker in:
+
+COR24 C
+
+Pascal
+
+Forth
+
+Lisp
+
+or a stripped-down embedded linker/loader
+
+without changing the compiler output format.
+
+Phase 3: optional reduced linker on COR24
+Later, if you want self-hosted development on COR24, you can implement one of these:
+
+A. full linker on COR24
+Takes multiple .spc streams and emits final executable stream
+
+B. incremental linker / loader
+More limited; resolves known module tables
+
+C. library-free monolithic builder
+For constrained use cases, combine compiler output and runtime in one pass
+
+But you do not need to decide that now.
+
+So what should the first linker API look like?
+Not “UART-only.”
+
+Instead, I would design the Rust linker around something like this conceptually:
+
+Core linker API
+Consumes:
+
+an iterator of parsed modules
+
+or an iterator of text records
+
+Produces:
+
+linked executable object/image
+
+and separately a serializer to text
+
+Then build thin front ends:
+
+File mode
+spclink runtime.spc app.spc -o app.pex
+Stream mode
+cat runtime.spc app.spc | spclink --stream > app.pex
+UART mode
+spclink runtime.spc app.spc | uartsend
+Embedded testing mode
+Directly call Rust functions with strings or byte buffers.
+
+This is the best of all worlds.
+
+File system vs no filesystem
+A useful mental model:
+
+Do not optimize for “no filesystem”
+Optimize for “no required random access in the object format.”
+
+Those are different.
+
+A filesystem-free environment mainly pressures you toward:
+
+self-delimiting records
+
+forward-readable formats
+
+low memory overhead
+
+limited passes if possible
+
+But it does not require you to reduce everything to stdin/stdout as the only software abstraction.
+
+For example, a COR24 linker could still consume:
+
+one module at a time from monitor input
+
+multiple modules from ROM
+
+memory-resident buffers produced by the Pascal compiler
+
+Forth strings or blocks
+
+Lisp-generated text
+
+The same textual record format can support all of that.
+
+Design implications for .spc
+Because you may eventually support linking on COR24, your textual module format should be:
+
+1. self-delimiting
+Each module clearly starts and ends.
+
+MODULE Runtime
+...
+ENDMODULE
+2. line-oriented
+Easy to parse on a small system.
+
+3. explicit
+Do not rely on inferencing imports/exports from code text if possible.
+
+4. forward-readable
+No need for backpatching in the raw textual representation.
+
+5. not dependent on files
+No assumptions like “module name comes from filename.”
+
+Instead, include the module name in the content.
+
+Recommended implementation language ranking now
+Given the clarified architecture, my ranking would be:
+
+1. Rust
+Best first linker implementation.
+
+Why
+already part of your host bootstrap ecosystem
+
+safer and cleaner parser/data structures
+
+great for tests
+
+easy to expose both stream and file front ends
+
+easy to later generate trace/debug outputs
+
+2. C
+Still viable, especially if you want close affinity with the Pascal compiler implementation.
+
+Why not first anymore
+Because your broader host toolchain is already Rust-heavy, and the linker benefits more from robust parsing/data handling than from tight coupling to the C compiler’s implementation language.
+
+3. Pascal on COR24
+A future milestone, not a first implementation.
+
+Good later for
+self-hosting story
+
+dogfooding Pascal modules/libraries
+
+proving toolchain maturity
+
+4. Forth or Lisp on COR24
+Interesting experimental or educational versions later.
+
+Not first, unless the point is specifically to explore language-hosted tooling.
+
+5. Assembler
+Only if you want pain for educational reasons.
+
+Not recommended.
+
+Important strategic point
+The object format is more important than the linker language.
+
+If you get these right:
+
+object/module records
+
+symbol naming conventions
+
+fixup conventions
+
+executable record format
+
+loader expectations
+
+then the first linker can be in Rust and later replaced without regret.
+
+That is the key.
+
+Best medium-term strategy
+I would explicitly choose this path:
+
+Step 1
+Write a Rust reference linker on Mac/Linux.
+
+This becomes the specification-by-implementation.
+
+Step 2
+Keep .spc simple and line-oriented.
+
+Step 3
+Keep final executable text image even simpler than .spc.
+
+Step 4
+Teach the VM/emulator to load only the final executable form.
+
+Step 5
+Later, if desired, create:
+
+a reduced COR24 linker
+
+or a COR24 loader that can consume prelinked text images
+
+or a monolithic COR24 compiler mode that bypasses separate linking
+
+What not to do
+Do not make UART the semantic model
+UART is only one transport.
+
+Do not make filenames semantically important
+Modules should name themselves internally.
+
+Do not make the VM do full linking yet
+Keep linking outside the VM for now.
+
+Do not over-design for archive libraries yet
+Multiple modules in a stream or list are enough initially.
+
+Do not require binary format yet
+Text is fine, especially for debugging and bootstrap.
+
+A strong practical design
+You could define:
+
+.spc
+Textual relocatable module format
+
+Contains:
+
+module declaration
+
+kind (program, unit, runtime, library)
+
+exports
+
+imports
+
+code
+
+relocations
+
+optional constants/statics metadata
+
+optional debug/source lines
+
+.pex
+Textual linked executable image
+
+Contains:
+
+version
+
+entry point
+
+final code stream
+
+final data layout
+
+optional debug map
+
+The emulator/VM only needs to understand .pex.
+
+The Rust linker converts many .spc modules into one .pex.
+
+Later, a COR24 linker can do the same if desired.
+
+Why this keeps future options open
+With this approach, later you can support all of these without redesigning the world:
+
+On Mac/Linux
+compile + link + UART load
+
+On COR24
+compile program to .spc
+
+compile library to .spc
+
+link locally from streams/buffers
+
+or just ship .spc back to host for linking
+
+or build monolithic linked images directly
+
+That flexibility comes from the format design, not from choosing stdin/stdout as the primitive.
+
+Bottom line
+Yes — with your clarified setup, Rust is the best choice for the first linker.
+
+Why
+Because:
+
+your bootstrap host toolchain is already Rust-based
+
+a linker is mostly structured parsing and symbol resolution
+
+Rust is excellent for that
+
+the first linker should live where development speed and testability are highest
+
+future COR24 self-hosting should be enabled by the format design, not forced by the first implementation language
+
+Best design principle
+Do not constrain yourself to “UART in / UART out” as the primary software model.
+
+Instead design:
+
+transport-neutral text formats
+
+self-delimiting modules
+
+a linker core independent of files vs streams
+
+Then give the Rust linker multiple front ends:
+
+file input
+
+stdin stream
+
+string/buffer input
+
+UART sender integration as a separate tool
+
+That keeps you moving fast now without boxing you in later.
+
+If you want, I can next draft a minimal .spc grammar and a matching Rust linker internal model with the exact passes and symbol/fixup records.
+
+
+
+

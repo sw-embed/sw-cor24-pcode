@@ -1,0 +1,3 @@
+[workspace]
+members = ["assembler", "linker"]
+resolver = "2"

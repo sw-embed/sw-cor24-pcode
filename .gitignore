@@ -2,3 +2,4 @@
 *.bin
 *.p24
 *.lst
+/target/
