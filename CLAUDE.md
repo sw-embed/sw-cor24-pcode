@@ -30,6 +30,21 @@ cd vm && ./demo.sh
 .spc sources -> pl24r (link) -> combined.spc -> pa24r (assemble) -> .p24 -> pvm.s (execute)
 ```
 
+## CRITICAL: pasm.s and pa24r must stay in sync
+
+`pasm.s` (COR24-native assembler) and `pa24r` (Rust assembler) are two
+implementations of the same two-pass .spc assembler. They MUST remain
+bug-compatible and at feature parity. Any opcode, directive, or encoding
+change in one must be mirrored in the other. When modifying either:
+
+1. Make the equivalent change in both implementations
+2. Run both test suites to verify identical output
+3. If adding a new opcode/directive, update the opcode table in both
+
+The COR24-native pasm.s proves the toolchain is self-hosting on real
+hardware; pa24r provides 4,447x faster assembly for development builds.
+Neither is optional.
+
 ## Dependencies
 
 - `cor24-run` from sw-cor24-emulator (for VM execution)
