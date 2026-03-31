@@ -30,7 +30,7 @@ cd vm && ./demo.sh
 
 ## Sibling Repos
 
-- [sw-cor24-assembler](https://github.com/sw-embed/sw-cor24-assembler) -- COR24 assembler
+- [sw-cor24-x-assembler](https://github.com/sw-embed/sw-cor24-x-assembler) -- COR24 assembler
 - [sw-cor24-emulator](https://github.com/sw-embed/sw-cor24-emulator) -- COR24 emulator + ISA
 - [sw-cor24-pascal](https://github.com/sw-embed/sw-cor24-pascal) -- Pascal compiler (emits .spc)
 - [web-sw-cor24-pcode](https://github.com/sw-embed/web-sw-cor24-pcode) -- browser-based p-code debugger
