@@ -1,0 +1,1 @@
+P-code toolchain development saga for COR24. Covers VM extensions (interpreter-assisting primitives like MEMCPY/MEMSET/MEMCMP/JMP_IND), assembler and linker enhancements, and toolchain improvements.

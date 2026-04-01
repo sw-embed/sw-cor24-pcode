@@ -1,0 +1,7 @@
+number = 1
+slug = "vm-memcpy-memset"
+status = "pending"
+description = "Implement MEMCPY and MEMSET as VM opcodes in the p-code VM (Tier 1 primitives..."
+role = "production"
+context_files = []
+created_at = "2026-04-01T16:26:56"

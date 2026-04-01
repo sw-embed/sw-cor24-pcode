@@ -49,3 +49,56 @@ Neither is optional.
 
 - `cor24-run` from sw-cor24-emulator (for VM execution)
 - No Rust crate dependencies (both pa24r and pl24r are pure Rust)
+
+## CRITICAL: AgentRail Session Protocol (MUST follow exactly)
+
+### 1. START (do this FIRST, before anything else)
+```bash
+agentrail next
+```
+Read the output carefully. It contains your current step, prompt,
+plan context, and any relevant skills/trajectories.
+
+### 2. BEGIN (immediately after reading the next output)
+```bash
+agentrail begin
+```
+
+### 3. WORK (do what the step prompt says)
+Do NOT ask "want me to proceed?". The step prompt IS your instruction.
+Execute it directly.
+
+### 4. COMMIT (after the work is done)
+Commit your code changes with git. Use `/mw-cp` for the checkpoint
+process (pre-commit checks, docs, detailed commit, push).
+**Run `/mw-cp` in every repo that was modified during the step.**
+
+### 5. COMPLETE (LAST thing, after committing)
+```bash
+agentrail complete --summary "what you accomplished" \
+  --reward 1 \
+  --actions "tools and approach used"
+```
+- If the step failed: `--reward -1 --failure-mode "what went wrong"`
+- If the saga is finished: add `--done`
+
+### 6. STOP (after complete, DO NOT continue working)
+Do NOT make further code changes after running `agentrail complete`.
+Any changes after complete are untracked and invisible to the next
+session. Future work belongs in the NEXT step, not this one.
+
+## Key Rules
+
+- **Do NOT skip steps** — the next session depends on accurate tracking
+- **Do NOT ask for permission** — the step prompt is the instruction
+- **Do NOT continue working** after `agentrail complete`
+- **Commit before complete** — always commit first, then record completion
+
+## Useful Commands
+
+```bash
+agentrail status          # Current saga state
+agentrail history         # All completed steps
+agentrail plan            # View the plan
+agentrail next            # Current step + context
+```
