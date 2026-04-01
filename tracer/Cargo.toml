@@ -1,0 +1,12 @@
+[package]
+name = "pv24t"
+version = "0.1.0"
+edition = "2024"
+description = "P-code trace interpreter for COR24 — reads .p24 binaries, executes with optional instruction-level tracing"
+
+[[bin]]
+name = "pv24t"
+path = "src/main.rs"
+
+[dependencies]
+pa24r = { path = "../assembler" }
