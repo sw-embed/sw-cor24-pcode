@@ -115,6 +115,7 @@ run_tests() {
     check "t11-memcpy"        "tests/t11-memcpy.spc"        "ABCABC"
     check "t12-memset"        "tests/t12-memset.spc"        "AAAA"
     check "t13-memcpy-overlap" "tests/t13-memcpy-overlap.spc" "ABABC"
+    check "t14-memcmp"        "tests/t14-memcmp.spc"        "OKLTOKGT"
 
     echo ""
     echo "${BOLD}Linked programs:${NC}"

@@ -290,6 +290,7 @@ impl Vm {
                 0x60 => Opcode::Sys,
                 0x70 => Opcode::Memcpy,
                 0x71 => Opcode::Memset,
+                0x72 => Opcode::Memcmp,
                 _ => {
                     self.trap(4); // invalid opcode
                     continue;
@@ -355,7 +356,8 @@ impl Vm {
             | Opcode::Loadb
             | Opcode::Storeb
             | Opcode::Memcpy
-            | Opcode::Memset => {
+            | Opcode::Memset
+            | Opcode::Memcmp => {
                 let _ = write!(err, "{:6}", format!("{op:?}").to_lowercase());
             }
             // Imm8
@@ -836,6 +838,22 @@ impl Vm {
                         self.write_byte(dst + i, val);
                     }
                 }
+            }
+
+            Opcode::Memcmp => {
+                let len = self.pop_eval() as usize;
+                let b = self.pop_eval() as usize;
+                let a = self.pop_eval() as usize;
+                let mut result: i32 = 0;
+                for i in 0..len {
+                    let ba = self.read_byte(a + i) & 0xFF;
+                    let bb = self.read_byte(b + i) & 0xFF;
+                    if ba != bb {
+                        result = if ba < bb { -1 } else { 1 };
+                        break;
+                    }
+                }
+                self.push_eval(result);
             }
 
             // System calls

@@ -2300,6 +2300,8 @@ mnem_table:
     .byte 109, 101, 109, 99, 112, 121, 0, 112, 0
     ; "memset" opcode=113 type=NONE
     .byte 109, 101, 109, 115, 101, 116, 0, 113, 0
+    ; "memcmp" opcode=114 type=NONE
+    .byte 109, 101, 109, 99, 109, 112, 0, 114, 0
     ; End sentinel
     .byte 0
 

@@ -148,9 +148,9 @@ vm_loop:
     add r0, 1
     sw r0, 0(fp)
 
-    ; Bounds check: opcode must be < 114 (0x00..0x71)
+    ; Bounds check: opcode must be < 115 (0x00..0x72)
     mov r0, r2
-    lc r2, 114
+    lc r2, 115
     clu r0, r2
     brt opcode_ok
     la r0, op_invalid
@@ -1771,6 +1771,114 @@ memset_val_tmp:
 memset_len_tmp:
     .word 0
 
+; 0x72 — memcmp: ( a b len -- result )
+; Compare len bytes at a and b lexicographically.
+; Push 0 if equal, -1 if a<b, 1 if a>b.
+op_memcmp:
+    ; fp = &vm_state
+    lw r2, 3(fp)         ; r2 = esp
+    lw r0, -3(r2)        ; r0 = len (TOS)
+    ceq r0, z
+    brf memcmp_nonzero
+    ; len is 0, pop 3 words, push 0 (equal)
+    add r2, -9
+    sw r2, 3(fp)
+    ; push 0 result
+    lw r2, 3(fp)
+    lc r0, 0
+    sw r0, 0(r2)
+    add r2, 3
+    sw r2, 3(fp)
+    la r0, vm_loop
+    jmp (r0)
+memcmp_nonzero:
+    ; Save len to temp
+    la r2, memcmp_len_tmp
+    sw r0, 0(r2)
+    ; Save b to temp
+    lw r2, 3(fp)
+    lw r0, -6(r2)        ; r0 = b
+    la r2, memcmp_b_tmp
+    sw r0, 0(r2)
+    ; Save a to temp
+    lw r2, 3(fp)
+    lw r0, -9(r2)        ; r0 = a
+    la r2, memcmp_a_tmp
+    sw r0, 0(r2)
+    ; Update esp (pop 3 words)
+    lw r2, 3(fp)
+    add r2, -9
+    sw r2, 3(fp)
+    la r0, memcmp_loop
+    jmp (r0)
+
+memcmp_loop:
+    ; Check len
+    la r0, memcmp_len_tmp
+    lw r2, 0(r0)
+    ceq r2, z
+    brf memcmp_step
+    ; All bytes equal — push 0
+    lw r2, 3(fp)
+    lc r0, 0
+    sw r0, 0(r2)
+    add r2, 3
+    sw r2, 3(fp)
+    la r0, vm_loop
+    jmp (r0)
+memcmp_step:
+    add r2, -1
+    sw r2, 0(r0)         ; len--
+    ; Load byte from a
+    la r0, memcmp_a_tmp
+    lw r0, 0(r0)         ; r0 = a ptr
+    lbu r2, 0(r0)        ; r2 = *a
+    push r2               ; save byte_a
+    add r0, 1
+    la r2, memcmp_a_tmp
+    sw r0, 0(r2)         ; a++
+    ; Load byte from b
+    la r0, memcmp_b_tmp
+    lw r0, 0(r0)         ; r0 = b ptr
+    lbu r2, 0(r0)        ; r2 = *b
+    push r2               ; save byte_b
+    add r0, 1
+    la r2, memcmp_b_tmp
+    sw r0, 0(r2)         ; b++
+    ; Compare: byte_b on top, byte_a below
+    pop r2                ; r2 = byte_b
+    pop r0                ; r0 = byte_a
+    ceq r0, r2
+    brf memcmp_loop       ; equal, continue
+    ; Not equal — determine result
+    clu r0, r2            ; flag = (byte_a < byte_b)
+    brf memcmp_greater
+    ; a < b: push -1 (0xFFFFFF in 24-bit)
+    lw r2, 3(fp)
+    la r0, -1
+    sw r0, 0(r2)
+    add r2, 3
+    sw r2, 3(fp)
+    la r0, vm_loop
+    jmp (r0)
+memcmp_greater:
+    ; a > b: push 1
+    lw r2, 3(fp)
+    lc r0, 1
+    sw r0, 0(r2)
+    add r2, 3
+    sw r2, 3(fp)
+    la r0, vm_loop
+    jmp (r0)
+
+; Temporary storage for memcmp
+memcmp_a_tmp:
+    .word 0
+memcmp_b_tmp:
+    .word 0
+memcmp_len_tmp:
+    .word 0
+
 ; 0x60 — sys id8: system call dispatch
 ; Uses sys_id_temp to preserve sys id across comparisons.
 ; All handlers expect fp = &vm_state on entry.
@@ -2053,7 +2161,7 @@ op_stub:
     jmp (r0)
 
 ; ============================================================
-; Dispatch table (114 entries: opcodes 0x00 through 0x71)
+; Dispatch table (115 entries: opcodes 0x00 through 0x72)
 ; Each entry is a .word (3 bytes) holding the handler address
 ; ============================================================
 dispatch_table:
@@ -2184,9 +2292,10 @@ dispatch_table:
     .word op_invalid
     .word op_invalid
     .word op_invalid
-    ; 0x70-0x71: Memory block operations
+    ; 0x70-0x72: Memory block operations
     .word op_memcpy
     .word op_memset
+    .word op_memcmp
 
 ; ============================================================
 ; String constants

@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-04-01 -- MEMCMP VM opcode (Tier 1)
+
+- Added MEMCMP (0x72) as VM opcode across all implementations:
+  pvm.s, pvmasm.s, pasm.s, pa24r, and pv24t
+- MEMCMP: ( a b len -- result ) lexicographic byte comparison
+  pushes 0 if equal, -1 if a<b, 1 if a>b
+- Zero-length compare returns 0 (equal)
+- Updated dispatch tables (115 entries), mnemonic tables, opcode enums
+- Added t14-memcmp test: equal, less-than, greater-than, zero-length
+- Updated design.md opcode table (reserved range now 0x73-0xFF)
+- All 152 Rust tests + 16 VM tests pass
+
 ## 2026-04-01 -- MEMCPY and MEMSET VM opcodes (Tier 1)
 
 - Added MEMCPY (0x70) and MEMSET (0x71) as VM opcodes across all

@@ -1,6 +1,6 @@
 number = 2
 slug = "vm-memcmp"
-status = "pending"
+status = "in-progress"
 description = "Implement MEMCMP as a VM opcode in the p-code VM (Tier 1 primitive from vm/do..."
 role = "production"
 context_files = []
