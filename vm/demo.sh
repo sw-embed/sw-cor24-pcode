@@ -111,6 +111,12 @@ run_tests() {
     check "t10-traps"    "tests/t10-traps.spc"    "TRAP 1"
 
     echo ""
+    echo "${BOLD}Memory block operations:${NC}"
+    check "t11-memcpy"        "tests/t11-memcpy.spc"        "ABCABC"
+    check "t12-memset"        "tests/t12-memset.spc"        "AAAA"
+    check "t13-memcpy-overlap" "tests/t13-memcpy-overlap.spc" "ABABC"
+
+    echo ""
     echo "${BOLD}Linked programs:${NC}"
     check "merged-int"   "tests/merged_int.spc"   "42"
     check "merged-str"   "tests/merged_str.spc"   "Hello"

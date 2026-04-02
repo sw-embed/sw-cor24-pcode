@@ -1,6 +1,6 @@
 number = 1
 slug = "vm-memcpy-memset"
-status = "pending"
+status = "in-progress"
 description = "Implement MEMCPY and MEMSET as VM opcodes in the p-code VM (Tier 1 primitives..."
 role = "production"
 context_files = []

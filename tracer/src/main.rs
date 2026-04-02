@@ -36,17 +36,21 @@ struct Vm {
 
     // Registers
     pc: usize,
-    esp: usize,  // eval stack pointer (points to next free slot)
-    csp: usize,  // call stack pointer (points to next free slot)
+    esp: usize,   // eval stack pointer (points to next free slot)
+    csp: usize,   // call stack pointer (points to next free slot)
     fp_vm: usize, // frame pointer
-    gp: usize,   // globals base
-    hp: usize,   // heap pointer
+    gp: usize,    // globals base
+    hp: usize,    // heap pointer
 
     // Layout boundaries
     code_size: usize,
+    #[allow(dead_code)]
     data_size: usize,
+    #[allow(dead_code)]
     global_count: usize,
+    #[allow(dead_code)]
     globals_base: usize,
+    #[allow(dead_code)]
     call_stack_base: usize,
     eval_stack_base: usize,
     heap_base: usize,
@@ -71,7 +75,12 @@ const HEAP_WORDS: usize = 256;
 const WORD: usize = 3;
 
 impl Vm {
-    fn new(image: pa24r::LoadedImage, stdin_data: Vec<u8>, trace: bool, max_instructions: u64) -> Self {
+    fn new(
+        image: pa24r::LoadedImage,
+        stdin_data: Vec<u8>,
+        trace: bool,
+        max_instructions: u64,
+    ) -> Self {
         let code_size = image.code.len();
         let data_size = image.data.len();
         let global_count = image.global_count as usize;
@@ -141,7 +150,11 @@ impl Vm {
     }
 
     fn read_byte(&self, addr: usize) -> i32 {
-        if addr >= self.mem.len() { 0 } else { self.mem[addr] as i32 }
+        if addr >= self.mem.len() {
+            0
+        } else {
+            self.mem[addr] as i32
+        }
     }
 
     fn write_byte(&mut self, addr: usize, val: i32) {
@@ -154,7 +167,11 @@ impl Vm {
 
     // Fetch operand bytes from code at pc
     fn fetch_u8(&mut self) -> u8 {
-        let v = if self.pc < self.code_size { self.mem[self.pc] } else { 0 };
+        let v = if self.pc < self.code_size {
+            self.mem[self.pc]
+        } else {
+            0
+        };
         self.pc += 1;
         v
     }
@@ -191,8 +208,11 @@ impl Vm {
     }
 
     fn peek_eval(&self) -> i32 {
-        if self.esp <= self.eval_stack_base { 0 }
-        else { self.read_word(self.esp - WORD) }
+        if self.esp <= self.eval_stack_base {
+            0
+        } else {
+            self.read_word(self.esp - WORD)
+        }
     }
 
     fn eval_depth(&self) -> usize {
@@ -207,7 +227,10 @@ impl Vm {
     fn run(&mut self) {
         while self.status == 0 {
             if self.max_instructions > 0 && self.instruction_count >= self.max_instructions {
-                eprintln!("pv24t: instruction limit reached ({} instructions)", self.max_instructions);
+                eprintln!(
+                    "pv24t: instruction limit reached ({} instructions)",
+                    self.max_instructions
+                );
                 self.status = 1;
                 break;
             }
@@ -265,6 +288,8 @@ impl Vm {
                 0x52 => Opcode::Loadb,
                 0x53 => Opcode::Storeb,
                 0x60 => Opcode::Sys,
+                0x70 => Opcode::Memcpy,
+                0x71 => Opcode::Memset,
                 _ => {
                     self.trap(4); // invalid opcode
                     continue;
@@ -284,7 +309,7 @@ impl Vm {
         if self.status == 2 {
             let stdout = io::stdout();
             let mut out = stdout.lock();
-            let _ = write!(out, "TRAP {}\n", self.trap_code);
+            let _ = writeln!(out, "TRAP {}", self.trap_code);
         }
     }
 
@@ -301,40 +326,90 @@ impl Vm {
 
         match op {
             // No operand
-            Opcode::Halt | Opcode::Dup | Opcode::Drop | Opcode::Swap | Opcode::Over |
-            Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div | Opcode::Mod | Opcode::Neg |
-            Opcode::And | Opcode::Or | Opcode::Xor | Opcode::Not | Opcode::Shl | Opcode::Shr |
-            Opcode::Eq | Opcode::Ne | Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge |
-            Opcode::Leave | Opcode::Load | Opcode::Store | Opcode::Loadb | Opcode::Storeb => {
+            Opcode::Halt
+            | Opcode::Dup
+            | Opcode::Drop
+            | Opcode::Swap
+            | Opcode::Over
+            | Opcode::Add
+            | Opcode::Sub
+            | Opcode::Mul
+            | Opcode::Div
+            | Opcode::Mod
+            | Opcode::Neg
+            | Opcode::And
+            | Opcode::Or
+            | Opcode::Xor
+            | Opcode::Not
+            | Opcode::Shl
+            | Opcode::Shr
+            | Opcode::Eq
+            | Opcode::Ne
+            | Opcode::Lt
+            | Opcode::Le
+            | Opcode::Gt
+            | Opcode::Ge
+            | Opcode::Leave
+            | Opcode::Load
+            | Opcode::Store
+            | Opcode::Loadb
+            | Opcode::Storeb
+            | Opcode::Memcpy
+            | Opcode::Memset => {
                 let _ = write!(err, "{:6}", format!("{op:?}").to_lowercase());
             }
             // Imm8
-            Opcode::PushS | Opcode::Ret | Opcode::Trap | Opcode::Enter |
-            Opcode::Loadl | Opcode::Storel | Opcode::Addrl |
-            Opcode::Loada | Opcode::Storea | Opcode::Sys => {
+            Opcode::PushS
+            | Opcode::Ret
+            | Opcode::Trap
+            | Opcode::Enter
+            | Opcode::Loadl
+            | Opcode::Storel
+            | Opcode::Addrl
+            | Opcode::Loada
+            | Opcode::Storea
+            | Opcode::Sys => {
                 let imm = if next < code.len() { code[next] } else { 0 };
                 let _ = write!(err, "{:6} {}", format!("{op:?}").to_lowercase(), imm);
             }
             // Imm24
-            Opcode::Push | Opcode::Jmp | Opcode::Jz | Opcode::Jnz | Opcode::Call |
-            Opcode::Loadg | Opcode::Storeg | Opcode::Addrg => {
+            Opcode::Push
+            | Opcode::Jmp
+            | Opcode::Jz
+            | Opcode::Jnz
+            | Opcode::Call
+            | Opcode::Loadg
+            | Opcode::Storeg
+            | Opcode::Addrg => {
                 let imm = if next + 2 < code.len() {
-                    code[next] as u32 | ((code[next+1] as u32) << 8) | ((code[next+2] as u32) << 16)
-                } else { 0 };
+                    code[next] as u32
+                        | ((code[next + 1] as u32) << 8)
+                        | ((code[next + 2] as u32) << 16)
+                } else {
+                    0
+                };
                 let _ = write!(err, "{:6} 0x{:06X}", format!("{op:?}").to_lowercase(), imm);
             }
             // D8A24
             Opcode::Calln => {
                 let d = if next < code.len() { code[next] } else { 0 };
                 let a = if next + 3 < code.len() {
-                    code[next+1] as u32 | ((code[next+2] as u32) << 8) | ((code[next+3] as u32) << 16)
-                } else { 0 };
+                    code[next + 1] as u32
+                        | ((code[next + 2] as u32) << 8)
+                        | ((code[next + 3] as u32) << 16)
+                } else {
+                    0
+                };
                 let _ = write!(err, "{:6} {} 0x{:06X}", "calln", d, a);
             }
             // D8O8
             Opcode::Loadn | Opcode::Storen => {
                 let d = if next < code.len() { code[next] } else { 0 };
-                let o = if next + 1 < code.len() { code[next + 1] } else { 0 };
+                let o = if next + 1 < code.len() {
+                    code[next + 1]
+                } else {
+                    0
+                };
                 let _ = write!(err, "{:6} {} {}", format!("{op:?}").to_lowercase(), d, o);
             }
         }
@@ -348,10 +423,14 @@ impl Vm {
             for i in 0..show {
                 let addr = self.esp - (i + 1) * WORD;
                 let val = self.read_word(addr);
-                if i > 0 { let _ = write!(err, ", "); }
+                if i > 0 {
+                    let _ = write!(err, ", ");
+                }
                 let _ = write!(err, "{}", val);
             }
-            if depth > 4 { let _ = write!(err, ", ..."); }
+            if depth > 4 {
+                let _ = write!(err, ", ...");
+            }
             let _ = write!(err, "]");
         }
 
@@ -400,19 +479,37 @@ impl Vm {
             }
 
             // Arithmetic
-            Opcode::Add => { let b = self.pop_eval(); let a = self.pop_eval(); self.push_eval(wrap24(a.wrapping_add(b))); }
-            Opcode::Sub => { let b = self.pop_eval(); let a = self.pop_eval(); self.push_eval(wrap24(a.wrapping_sub(b))); }
-            Opcode::Mul => { let b = self.pop_eval(); let a = self.pop_eval(); self.push_eval(wrap24(a.wrapping_mul(b))); }
+            Opcode::Add => {
+                let b = self.pop_eval();
+                let a = self.pop_eval();
+                self.push_eval(wrap24(a.wrapping_add(b)));
+            }
+            Opcode::Sub => {
+                let b = self.pop_eval();
+                let a = self.pop_eval();
+                self.push_eval(wrap24(a.wrapping_sub(b)));
+            }
+            Opcode::Mul => {
+                let b = self.pop_eval();
+                let a = self.pop_eval();
+                self.push_eval(wrap24(a.wrapping_mul(b)));
+            }
             Opcode::Div => {
                 let b = self.pop_eval();
                 let a = self.pop_eval();
-                if b == 0 { self.trap(1); return; }
+                if b == 0 {
+                    self.trap(1);
+                    return;
+                }
                 self.push_eval(wrap24(a / b));
             }
             Opcode::Mod => {
                 let b = self.pop_eval();
                 let a = self.pop_eval();
-                if b == 0 { self.trap(1); return; }
+                if b == 0 {
+                    self.trap(1);
+                    return;
+                }
                 self.push_eval(wrap24(a % b));
             }
             Opcode::Neg => {
@@ -421,20 +518,67 @@ impl Vm {
             }
 
             // Logic
-            Opcode::And => { let b = self.pop_eval(); let a = self.pop_eval(); self.push_eval(wrap24(a & b)); }
-            Opcode::Or  => { let b = self.pop_eval(); let a = self.pop_eval(); self.push_eval(wrap24(a | b)); }
-            Opcode::Xor => { let b = self.pop_eval(); let a = self.pop_eval(); self.push_eval(wrap24(a ^ b)); }
-            Opcode::Not => { let a = self.pop_eval(); self.push_eval(wrap24(!a)); }
-            Opcode::Shl => { let n = self.pop_eval(); let a = self.pop_eval(); self.push_eval(wrap24(a << (n & 0x1F))); }
-            Opcode::Shr => { let n = self.pop_eval(); let a = self.pop_eval(); self.push_eval(wrap24(a >> (n & 0x1F))); }
+            Opcode::And => {
+                let b = self.pop_eval();
+                let a = self.pop_eval();
+                self.push_eval(wrap24(a & b));
+            }
+            Opcode::Or => {
+                let b = self.pop_eval();
+                let a = self.pop_eval();
+                self.push_eval(wrap24(a | b));
+            }
+            Opcode::Xor => {
+                let b = self.pop_eval();
+                let a = self.pop_eval();
+                self.push_eval(wrap24(a ^ b));
+            }
+            Opcode::Not => {
+                let a = self.pop_eval();
+                self.push_eval(wrap24(!a));
+            }
+            Opcode::Shl => {
+                let n = self.pop_eval();
+                let a = self.pop_eval();
+                self.push_eval(wrap24(a << (n & 0x1F)));
+            }
+            Opcode::Shr => {
+                let n = self.pop_eval();
+                let a = self.pop_eval();
+                self.push_eval(wrap24(a >> (n & 0x1F)));
+            }
 
             // Comparison
-            Opcode::Eq => { let b = self.pop_eval(); let a = self.pop_eval(); self.push_eval(if a == b { 1 } else { 0 }); }
-            Opcode::Ne => { let b = self.pop_eval(); let a = self.pop_eval(); self.push_eval(if a != b { 1 } else { 0 }); }
-            Opcode::Lt => { let b = self.pop_eval(); let a = self.pop_eval(); self.push_eval(if a < b { 1 } else { 0 }); }
-            Opcode::Le => { let b = self.pop_eval(); let a = self.pop_eval(); self.push_eval(if a <= b { 1 } else { 0 }); }
-            Opcode::Gt => { let b = self.pop_eval(); let a = self.pop_eval(); self.push_eval(if a > b { 1 } else { 0 }); }
-            Opcode::Ge => { let b = self.pop_eval(); let a = self.pop_eval(); self.push_eval(if a >= b { 1 } else { 0 }); }
+            Opcode::Eq => {
+                let b = self.pop_eval();
+                let a = self.pop_eval();
+                self.push_eval(if a == b { 1 } else { 0 });
+            }
+            Opcode::Ne => {
+                let b = self.pop_eval();
+                let a = self.pop_eval();
+                self.push_eval(if a != b { 1 } else { 0 });
+            }
+            Opcode::Lt => {
+                let b = self.pop_eval();
+                let a = self.pop_eval();
+                self.push_eval(if a < b { 1 } else { 0 });
+            }
+            Opcode::Le => {
+                let b = self.pop_eval();
+                let a = self.pop_eval();
+                self.push_eval(if a <= b { 1 } else { 0 });
+            }
+            Opcode::Gt => {
+                let b = self.pop_eval();
+                let a = self.pop_eval();
+                self.push_eval(if a > b { 1 } else { 0 });
+            }
+            Opcode::Ge => {
+                let b = self.pop_eval();
+                let a = self.pop_eval();
+                self.push_eval(if a >= b { 1 } else { 0 });
+            }
 
             // Control flow
             Opcode::Jmp => {
@@ -445,13 +589,17 @@ impl Vm {
             Opcode::Jz => {
                 let addr = self.fetch_u24() as usize;
                 let flag = self.pop_eval();
-                if flag == 0 { self.pc = addr; }
+                if flag == 0 {
+                    self.pc = addr;
+                }
             }
 
             Opcode::Jnz => {
                 let addr = self.fetch_u24() as usize;
                 let flag = self.pop_eval();
-                if flag != 0 { self.pc = addr; }
+                if flag != 0 {
+                    self.pc = addr;
+                }
             }
 
             Opcode::Call => {
@@ -461,10 +609,10 @@ impl Vm {
                 //   [3] dynamic link (old fp_vm)
                 //   [6] static link (= dynamic link for non-nested)
                 //   [9] saved esp
-                self.write_word(self.csp, self.pc as i32);        // return PC
-                self.write_word(self.csp + WORD, self.fp_vm as i32);  // dynamic link
+                self.write_word(self.csp, self.pc as i32); // return PC
+                self.write_word(self.csp + WORD, self.fp_vm as i32); // dynamic link
                 self.write_word(self.csp + 2 * WORD, self.fp_vm as i32); // static link (same as dynamic for flat calls)
-                self.write_word(self.csp + 3 * WORD, self.esp as i32);   // saved esp
+                self.write_word(self.csp + 3 * WORD, self.esp as i32); // saved esp
                 self.csp += 4 * WORD;
                 self.pc = addr;
             }
@@ -498,7 +646,11 @@ impl Vm {
                 // Check if there's a return value on the eval stack
                 // (function result sits above what was saved)
                 let has_return = self.esp > self.read_word(self.fp_vm + 3 * WORD) as usize;
-                let return_val = if has_return { Some(self.pop_eval()) } else { None };
+                let return_val = if has_return {
+                    Some(self.pop_eval())
+                } else {
+                    None
+                };
 
                 // Restore state
                 self.csp = self.fp_vm;
@@ -614,7 +766,10 @@ impl Vm {
             // Indirect memory access
             Opcode::Load => {
                 let addr = self.pop_eval();
-                if addr == 0 { self.trap(6); return; } // nil pointer
+                if addr == 0 {
+                    self.trap(6);
+                    return;
+                } // nil pointer
                 let val = self.read_word(addr as usize);
                 self.push_eval(val);
             }
@@ -622,13 +777,19 @@ impl Vm {
             Opcode::Store => {
                 let addr = self.pop_eval();
                 let val = self.pop_eval();
-                if addr == 0 { self.trap(6); return; }
+                if addr == 0 {
+                    self.trap(6);
+                    return;
+                }
                 self.write_word(addr as usize, val);
             }
 
             Opcode::Loadb => {
                 let addr = self.pop_eval();
-                if addr == 0 { self.trap(6); return; }
+                if addr == 0 {
+                    self.trap(6);
+                    return;
+                }
                 let val = self.read_byte(addr as usize);
                 self.push_eval(val);
             }
@@ -636,8 +797,45 @@ impl Vm {
             Opcode::Storeb => {
                 let addr = self.pop_eval();
                 let val = self.pop_eval();
-                if addr == 0 { self.trap(6); return; }
+                if addr == 0 {
+                    self.trap(6);
+                    return;
+                }
                 self.write_byte(addr as usize, val);
+            }
+
+            // Memory block operations
+            Opcode::Memcpy => {
+                let len = self.pop_eval() as usize;
+                let dst = self.pop_eval() as usize;
+                let src = self.pop_eval() as usize;
+                if len > 0 {
+                    // memmove semantics: handle overlapping regions
+                    if src < dst {
+                        // Copy backward
+                        for i in (0..len).rev() {
+                            let b = self.read_byte(src + i);
+                            self.write_byte(dst + i, b);
+                        }
+                    } else {
+                        // Copy forward
+                        for i in 0..len {
+                            let b = self.read_byte(src + i);
+                            self.write_byte(dst + i, b);
+                        }
+                    }
+                }
+            }
+
+            Opcode::Memset => {
+                let len = self.pop_eval() as usize;
+                let val = self.pop_eval();
+                let dst = self.pop_eval() as usize;
+                if len > 0 {
+                    for i in 0..len {
+                        self.write_byte(dst + i, val);
+                    }
+                }
             }
 
             // System calls
@@ -740,7 +938,10 @@ fn main() {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "-t" => { trace = true; i += 1; }
+            "-t" => {
+                trace = true;
+                i += 1;
+            }
             "-n" => {
                 i += 1;
                 max_instructions = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -748,7 +949,7 @@ fn main() {
             }
             "-i" => {
                 i += 1;
-                stdin_text = args.get(i).map(|s| s.clone());
+                stdin_text = args.get(i).cloned();
                 i += 1;
             }
             "-h" | "--help" => usage(),
@@ -788,8 +989,13 @@ fn main() {
     };
 
     if trace {
-        eprintln!("pv24t: loaded {path}: code={} data={} globals={} entry=0x{:04X}",
-            image.code.len(), image.data.len(), image.global_count, image.entry_point);
+        eprintln!(
+            "pv24t: loaded {path}: code={} data={} globals={} entry=0x{:04X}",
+            image.code.len(),
+            image.data.len(),
+            image.global_count,
+            image.entry_point
+        );
     }
 
     let stdin_data = stdin_text.map(|s| s.into_bytes()).unwrap_or_default();
@@ -797,8 +1003,15 @@ fn main() {
     vm.run();
 
     if trace {
-        eprintln!("pv24t: {} instructions executed, status={}", vm.instruction_count, vm.status);
+        eprintln!(
+            "pv24t: {} instructions executed, status={}",
+            vm.instruction_count, vm.status
+        );
     }
 
-    process::exit(if vm.status == 2 { vm.trap_code as i32 } else { 0 });
+    process::exit(if vm.status == 2 {
+        vm.trap_code as i32
+    } else {
+        0
+    });
 }

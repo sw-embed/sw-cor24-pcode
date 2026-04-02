@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-04-01 -- MEMCPY and MEMSET VM opcodes (Tier 1)
+
+- Added MEMCPY (0x70) and MEMSET (0x71) as VM opcodes across all
+  implementations: pvm.s, pvmasm.s, pasm.s, pa24r, and pv24t
+- MEMCPY: ( src dst len -- ) with memmove semantics (overlapping-safe)
+- MEMSET: ( dst val len -- ) fills len bytes with val
+- Zero-length operations are no-ops (only pop arguments)
+- Updated dispatch tables, mnemonic tables, and opcode enums
+- Added 3 test programs: basic copy, basic fill, overlapping copy
+- Updated design.md opcode table
+- Fixed pre-existing clippy warnings in tracer (dead_code, write_with_newline, map_clone)
+- All 152 Rust tests + 15 VM tests pass
+
 ## 2026-03-29 -- Repository created from fork + merge
 
 - Forked [pv24a](https://github.com/softwarewrighter/pv24a) to

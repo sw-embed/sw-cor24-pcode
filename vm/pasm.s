@@ -2296,6 +2296,10 @@ mnem_table:
     .byte 115, 116, 111, 114, 101, 98, 0, 83, 0
     ; "sys" opcode=96 type=IMM8
     .byte 115, 121, 115, 0, 96, 1
+    ; "memcpy" opcode=112 type=NONE
+    .byte 109, 101, 109, 99, 112, 121, 0, 112, 0
+    ; "memset" opcode=113 type=NONE
+    .byte 109, 101, 109, 115, 101, 116, 0, 113, 0
     ; End sentinel
     .byte 0
 

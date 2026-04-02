@@ -319,8 +319,10 @@ Opcodes are assigned sequential byte values:
 | 0x52 | loadb | — |
 | 0x53 | storeb | — |
 | 0x60 | sys | id8 |
+| 0x70 | memcpy | — |
+| 0x71 | memset | — |
 
-Reserved ranges 0x70–0xFF for future opcodes (heap, debug, extended ops).
+Reserved ranges 0x72–0xFF for future opcodes (heap, debug, extended ops).
 
 ## 7. Trap Codes
 

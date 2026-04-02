@@ -2276,9 +2276,9 @@ vm_loop:
     add r0, 1
     sw r0, 0(fp)
 
-    ; Bounds check: opcode must be < 97 (0x00..0x60)
+    ; Bounds check: opcode must be < 114 (0x00..0x71)
     mov r0, r2
-    lc r2, 97
+    lc r2, 114
     clu r0, r2
     brt opcode_ok
     la r0, op_invalid
@@ -3704,6 +3704,201 @@ storeb_not_nil:
     la r0, vm_loop
     jmp (r0)
 
+; 0x70 — memcpy: ( src dst len -- ) copy len bytes, memmove semantics
+op_memcpy:
+    ; fp = &vm_state
+    lw r2, 3(fp)         ; r2 = esp
+    lw r0, -3(r2)        ; r0 = len (TOS)
+    ceq r0, z
+    brf memcpy_nonzero
+    ; len is 0, just pop 3 words from eval stack
+    add r2, -9
+    sw r2, 3(fp)
+    la r0, vm_loop
+    jmp (r0)
+memcpy_nonzero:
+    ; Save len to temp
+    la r2, memcpy_len_tmp
+    sw r0, 0(r2)
+    ; Save dst to temp
+    lw r2, 3(fp)
+    lw r0, -6(r2)        ; r0 = dst
+    la r2, memcpy_dst_tmp
+    sw r0, 0(r2)
+    ; Save src to temp
+    lw r2, 3(fp)
+    lw r0, -9(r2)        ; r0 = src
+    la r2, memcpy_src_tmp
+    sw r0, 0(r2)
+    ; Update esp (pop 3 words)
+    lw r2, 3(fp)
+    add r2, -9
+    sw r2, 3(fp)
+    ; Direction check: if src < dst, copy backward
+    ; r0 = src still
+    la r2, memcpy_dst_tmp
+    lw r2, 0(r2)         ; r2 = dst
+    clu r0, r2            ; flag = (src < dst)
+    brf memcpy_fwd_loop
+    la r0, memcpy_bwd_setup
+    jmp (r0)
+
+memcpy_fwd_loop:
+    ; Check len
+    la r0, memcpy_len_tmp
+    lw r2, 0(r0)
+    ceq r2, z
+    brf memcpy_fwd_step
+    la r0, vm_loop
+    jmp (r0)
+memcpy_fwd_step:
+    add r2, -1
+    sw r2, 0(r0)         ; len--
+    ; Load byte from src
+    la r0, memcpy_src_tmp
+    lw r0, 0(r0)         ; r0 = src
+    lbu r2, 0(r0)        ; r2 = *src
+    push r2               ; save byte
+    add r0, 1
+    la r2, memcpy_src_tmp
+    sw r0, 0(r2)         ; src++
+    ; Store byte to dst
+    la r0, memcpy_dst_tmp
+    lw r0, 0(r0)         ; r0 = dst
+    pop r2                ; r2 = byte
+    sb r2, 0(r0)          ; *dst = byte
+    add r0, 1
+    la r2, memcpy_dst_tmp
+    sw r0, 0(r2)         ; dst++
+    la r0, memcpy_fwd_loop
+    jmp (r0)
+
+memcpy_bwd_setup:
+    ; Start from end: adjust src and dst to last byte
+    la r0, memcpy_len_tmp
+    lw r0, 0(r0)         ; r0 = len
+    add r0, -1            ; r0 = len - 1
+    push r0               ; save offset
+    ; src += offset
+    la r2, memcpy_src_tmp
+    lw r2, 0(r2)         ; r2 = src
+    add r2, r0            ; r2 = src + len - 1
+    la r0, memcpy_src_tmp
+    sw r2, 0(r0)         ; update src
+    ; dst += offset
+    pop r0                ; r0 = offset
+    la r2, memcpy_dst_tmp
+    lw r2, 0(r2)         ; r2 = dst
+    add r2, r0            ; r2 = dst + len - 1
+    la r0, memcpy_dst_tmp
+    sw r2, 0(r0)         ; update dst
+    la r0, memcpy_bwd_loop
+    jmp (r0)
+
+memcpy_bwd_loop:
+    ; Check len
+    la r0, memcpy_len_tmp
+    lw r2, 0(r0)
+    ceq r2, z
+    brf memcpy_bwd_step
+    la r0, vm_loop
+    jmp (r0)
+memcpy_bwd_step:
+    add r2, -1
+    sw r2, 0(r0)         ; len--
+    ; Load byte from src (at end)
+    la r0, memcpy_src_tmp
+    lw r0, 0(r0)
+    lbu r2, 0(r0)
+    push r2
+    add r0, -1
+    la r2, memcpy_src_tmp
+    sw r0, 0(r2)         ; src--
+    ; Store byte to dst (at end)
+    la r0, memcpy_dst_tmp
+    lw r0, 0(r0)
+    pop r2
+    sb r2, 0(r0)
+    add r0, -1
+    la r2, memcpy_dst_tmp
+    sw r0, 0(r2)         ; dst--
+    la r0, memcpy_bwd_loop
+    jmp (r0)
+
+; Temporary storage for memcpy
+memcpy_src_tmp:
+    .word 0
+memcpy_dst_tmp:
+    .word 0
+memcpy_len_tmp:
+    .word 0
+
+; 0x71 — memset: ( dst val len -- ) fill len bytes with val
+op_memset:
+    ; fp = &vm_state
+    lw r2, 3(fp)         ; r2 = esp
+    lw r0, -3(r2)        ; r0 = len (TOS)
+    ceq r0, z
+    brf memset_nonzero
+    ; len is 0, just pop 3 words from eval stack
+    add r2, -9
+    sw r2, 3(fp)
+    la r0, vm_loop
+    jmp (r0)
+memset_nonzero:
+    ; Save len to temp
+    la r2, memset_len_tmp
+    sw r0, 0(r2)
+    ; Save val to temp
+    lw r2, 3(fp)
+    lw r0, -6(r2)        ; r0 = val
+    la r2, memset_val_tmp
+    sw r0, 0(r2)
+    ; Save dst to temp
+    lw r2, 3(fp)
+    lw r0, -9(r2)        ; r0 = dst
+    la r2, memset_dst_tmp
+    sw r0, 0(r2)
+    ; Update esp (pop 3 words)
+    lw r2, 3(fp)
+    add r2, -9
+    sw r2, 3(fp)
+    la r0, memset_loop
+    jmp (r0)
+
+memset_loop:
+    ; Check len
+    la r0, memset_len_tmp
+    lw r2, 0(r0)
+    ceq r2, z
+    brf memset_step
+    la r0, vm_loop
+    jmp (r0)
+memset_step:
+    add r2, -1
+    sw r2, 0(r0)         ; len--
+    ; Store val byte to dst
+    la r0, memset_val_tmp
+    lw r0, 0(r0)         ; r0 = val
+    push r0               ; save val
+    la r0, memset_dst_tmp
+    lw r0, 0(r0)         ; r0 = dst
+    pop r2                ; r2 = val
+    sb r2, 0(r0)          ; *dst = val
+    add r0, 1
+    la r2, memset_dst_tmp
+    sw r0, 0(r2)         ; dst++
+    la r0, memset_loop
+    jmp (r0)
+
+; Temporary storage for memset
+memset_dst_tmp:
+    .word 0
+memset_val_tmp:
+    .word 0
+memset_len_tmp:
+    .word 0
+
 ; 0x60 — sys id8: system call dispatch
 ; Uses sys_id_temp to preserve sys id across comparisons.
 ; All handlers expect fp = &vm_state on entry.
@@ -3986,7 +4181,7 @@ op_stub:
     jmp (r0)
 
 ; ============================================================
-; Dispatch table (97 entries: opcodes 0x00 through 0x60)
+; Dispatch table (114 entries: opcodes 0x00 through 0x71)
 ; Each entry is a .word (3 bytes) holding the handler address
 ; ============================================================
 dispatch_table:
@@ -4101,6 +4296,25 @@ dispatch_table:
     .word op_invalid
     ; 0x60: sys
     .word op_sys
+    ; 0x61-0x6F: reserved (gap)
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    .word op_invalid
+    ; 0x70-0x71: Memory block operations
+    .word op_memcpy
+    .word op_memset
 ; ============================================================
 ; Mnemonic table
 ; ============================================================
@@ -4208,6 +4422,10 @@ mnem_table:
     .byte 115, 116, 111, 114, 101, 98, 0, 83, 0
     ; "sys" opcode=96 type=IMM8
     .byte 115, 121, 115, 0, 96, 1
+    ; "memcpy" opcode=112 type=NONE
+    .byte 109, 101, 109, 99, 112, 121, 0, 112, 0
+    ; "memset" opcode=113 type=NONE
+    .byte 109, 101, 109, 115, 101, 116, 0, 113, 0
     ; End sentinel
     .byte 0
 

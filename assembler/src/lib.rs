@@ -103,6 +103,10 @@ pub enum Opcode {
 
     // System calls (0x60)
     Sys = 0x60,
+
+    // Memory block operations (0x70-0x71)
+    Memcpy = 0x70,
+    Memset = 0x71,
 }
 
 impl Opcode {
@@ -137,7 +141,9 @@ impl Opcode {
             | Opcode::Load
             | Opcode::Store
             | Opcode::Loadb
-            | Opcode::Storeb => Encoding::None,
+            | Opcode::Storeb
+            | Opcode::Memcpy
+            | Opcode::Memset => Encoding::None,
 
             // IMM8 encoding (2 bytes)
             Opcode::PushS
@@ -226,6 +232,8 @@ impl Opcode {
             "loadn" => Some(Opcode::Loadn),
             "storen" => Some(Opcode::Storen),
             "sys" => Some(Opcode::Sys),
+            "memcpy" => Some(Opcode::Memcpy),
+            "memset" => Some(Opcode::Memset),
             _ => None,
         }
     }
