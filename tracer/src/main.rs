@@ -291,6 +291,7 @@ impl Vm {
                 0x70 => Opcode::Memcpy,
                 0x71 => Opcode::Memset,
                 0x72 => Opcode::Memcmp,
+                0x73 => Opcode::JmpInd,
                 _ => {
                     self.trap(4); // invalid opcode
                     continue;
@@ -357,7 +358,8 @@ impl Vm {
             | Opcode::Storeb
             | Opcode::Memcpy
             | Opcode::Memset
-            | Opcode::Memcmp => {
+            | Opcode::Memcmp
+            | Opcode::JmpInd => {
                 let _ = write!(err, "{:6}", format!("{op:?}").to_lowercase());
             }
             // Imm8
@@ -854,6 +856,12 @@ impl Vm {
                     }
                 }
                 self.push_eval(result);
+            }
+
+            // Indirect jump
+            Opcode::JmpInd => {
+                let addr = self.pop_eval() as usize;
+                self.pc = addr;
             }
 
             // System calls

@@ -148,9 +148,9 @@ vm_loop:
     add r0, 1
     sw r0, 0(fp)
 
-    ; Bounds check: opcode must be < 115 (0x00..0x72)
+    ; Bounds check: opcode must be < 116 (0x00..0x73)
     mov r0, r2
-    lc r2, 115
+    lc r2, 116
     clu r0, r2
     brt opcode_ok
     la r0, op_invalid
@@ -1879,6 +1879,20 @@ memcmp_b_tmp:
 memcmp_len_tmp:
     .word 0
 
+; 0x73 — jmp_ind: ( addr -- )
+; Jump to address on top of eval stack (indirect/computed jump).
+op_jmp_ind:
+    ; fp = &vm_state
+    lw r2, 3(fp)         ; r2 = esp
+    lw r0, -3(r2)        ; r0 = addr (TOS)
+    ; Pop the address
+    add r2, -3
+    sw r2, 3(fp)
+    ; Set pc = addr
+    sw r0, 0(fp)
+    la r0, vm_loop
+    jmp (r0)
+
 ; 0x60 — sys id8: system call dispatch
 ; Uses sys_id_temp to preserve sys id across comparisons.
 ; All handlers expect fp = &vm_state on entry.
@@ -2296,6 +2310,8 @@ dispatch_table:
     .word op_memcpy
     .word op_memset
     .word op_memcmp
+    ; 0x73: Indirect jump
+    .word op_jmp_ind
 
 ; ============================================================
 ; String constants

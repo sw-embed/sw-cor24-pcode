@@ -1,6 +1,6 @@
 number = 3
 slug = "vm-jmp-ind"
-status = "pending"
+status = "in-progress"
 description = "Implement JMP_IND as a VM opcode in the p-code VM (Tier 2 primitive from vm/d..."
 role = "production"
 context_files = []

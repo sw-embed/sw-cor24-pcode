@@ -2302,6 +2302,8 @@ mnem_table:
     .byte 109, 101, 109, 115, 101, 116, 0, 113, 0
     ; "memcmp" opcode=114 type=NONE
     .byte 109, 101, 109, 99, 109, 112, 0, 114, 0
+    ; "jmp_ind" opcode=115 type=NONE
+    .byte 106, 109, 112, 95, 105, 110, 100, 0, 115, 0
     ; End sentinel
     .byte 0
 

@@ -72,6 +72,7 @@ All comparisons push 1 (true) or 0 (false):
 | `ret` nargs8 | 2 bytes | ( [retval] -- [retval] ) | Return, clean nargs |
 | `halt` | 1 byte | ( -- ) | Stop VM |
 | `trap` code8 | 2 bytes | ( -- ) | Trigger trap |
+| `jmp_ind` | 1 byte | ( addr -- ) | Indirect jump to address on eval stack |
 
 ### 2.5 Local / Global / Nonlocal Access
 
@@ -322,8 +323,9 @@ Opcodes are assigned sequential byte values:
 | 0x70 | memcpy | — |
 | 0x71 | memset | — |
 | 0x72 | memcmp | — |
+| 0x73 | jmp_ind | — |
 
-Reserved ranges 0x73–0xFF for future opcodes (heap, debug, extended ops).
+Reserved ranges 0x74–0xFF for future opcodes (heap, debug, extended ops).
 
 ## 7. Trap Codes
 

@@ -108,6 +108,9 @@ pub enum Opcode {
     Memcpy = 0x70,
     Memset = 0x71,
     Memcmp = 0x72,
+
+    // Indirect jump (0x73)
+    JmpInd = 0x73,
 }
 
 impl Opcode {
@@ -145,7 +148,8 @@ impl Opcode {
             | Opcode::Storeb
             | Opcode::Memcpy
             | Opcode::Memset
-            | Opcode::Memcmp => Encoding::None,
+            | Opcode::Memcmp
+            | Opcode::JmpInd => Encoding::None,
 
             // IMM8 encoding (2 bytes)
             Opcode::PushS
@@ -237,6 +241,7 @@ impl Opcode {
             "memcpy" => Some(Opcode::Memcpy),
             "memset" => Some(Opcode::Memset),
             "memcmp" => Some(Opcode::Memcmp),
+            "jmp_ind" => Some(Opcode::JmpInd),
             _ => None,
         }
     }
