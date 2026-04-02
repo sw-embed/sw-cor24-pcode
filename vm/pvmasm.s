@@ -3999,6 +3999,20 @@ memcmp_greater:
     la r0, vm_loop
     jmp (r0)
 
+; 0x73 — jmp_ind: ( addr -- )
+; Jump to address on top of eval stack (indirect/computed jump).
+op_jmp_ind:
+    ; fp = &vm_state
+    lw r2, 3(fp)         ; r2 = esp
+    lw r0, -3(r2)        ; r0 = addr (TOS)
+    ; Pop the address
+    add r2, -3
+    sw r2, 3(fp)
+    ; Set pc = addr
+    sw r0, 0(fp)
+    la r0, vm_loop
+    jmp (r0)
+
 ; Temporary storage for memcmp
 memcmp_a_tmp:
     .word 0
@@ -4424,6 +4438,8 @@ dispatch_table:
     .word op_memcpy
     .word op_memset
     .word op_memcmp
+    ; 0x73: Indirect jump
+    .word op_jmp_ind
 ; ============================================================
 ; Mnemonic table
 ; ============================================================
@@ -4537,6 +4553,8 @@ mnem_table:
     .byte 109, 101, 109, 115, 101, 116, 0, 113, 0
     ; "memcmp" opcode=114 type=NONE
     .byte 109, 101, 109, 99, 109, 112, 0, 114, 0
+    ; "jmp_ind" opcode=115 type=NONE
+    .byte 106, 109, 112, 95, 105, 110, 100, 0, 115, 0
     ; End sentinel
     .byte 0
 

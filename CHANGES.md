@@ -3,13 +3,15 @@
 ## 2026-04-01 -- JMP_IND VM opcode (Tier 2)
 
 - Added JMP_IND (0x73) as VM opcode across all implementations:
-  pvm.s, pasm.s, pa24r, and pv24t
+  pvm.s, pvmasm.s, pasm.s, pa24r, and pv24t
 - JMP_IND: ( addr -- ) indirect jump to address on eval stack
 - Enables efficient dispatch tables for interpreters and computed gotos
 - Updated dispatch tables (116 entries), mnemonic tables, opcode enums
 - Added t15-jmp_ind test: basic indirect jump, chained jump, computed target
 - Updated design.md opcode table and control flow section
   (reserved range now 0x74-0xFF)
+- Fix: pvmasm.s was missing jmp_ind handler, dispatch entry, and mnemonic
+  (original commit only added to pvm.s and pasm.s)
 - All 152 Rust tests + 17 VM tests pass
 
 ## 2026-04-01 -- MEMCMP VM opcode (Tier 1)
