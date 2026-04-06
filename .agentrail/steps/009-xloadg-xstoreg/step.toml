@@ -1,6 +1,6 @@
 number = 9
 slug = "xloadg-xstoreg"
-status = "pending"
+status = "in-progress"
 description = "Add XLOADG (0x75) and XSTOREG (0x76) opcodes for cross-unit global access. En..."
 role = "production"
 context_files = []

@@ -2339,6 +2339,10 @@ mnem_table:
     .byte 106, 109, 112, 95, 105, 110, 100, 0, 115, 0
     ; "xcall" opcode=116 type=IMM16
     .byte 120, 99, 97, 108, 108, 0, 116, 5
+    ; "xloadg" opcode=117 type=D8_O8
+    .byte 120, 108, 111, 97, 100, 103, 0, 117, 4
+    ; "xstoreg" opcode=118 type=D8_O8
+    .byte 120, 115, 116, 111, 114, 101, 103, 0, 118, 4
     ; End sentinel
     .byte 0
 

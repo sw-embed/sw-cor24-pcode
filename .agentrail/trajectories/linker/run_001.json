@@ -1,0 +1,11 @@
+{
+  "task_type": "linker",
+  "state": {
+    "number": 8,
+    "step": "linker-unit-mode"
+  },
+  "action": "Read linker parser/linker/main, added .unit/.import parsing, implemented link_unit with export validation and internal extern resolution, emit_unit with directive preservation, CLI --unit flag, comprehensive tests",
+  "result": "success",
+  "reward": 1,
+  "timestamp": "2026-04-06T10:50:43"
+}

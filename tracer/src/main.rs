@@ -293,6 +293,8 @@ impl Vm {
                 0x72 => Opcode::Memcmp,
                 0x73 => Opcode::JmpInd,
                 0x74 => Opcode::XCall,
+                0x75 => Opcode::XLoadg,
+                0x76 => Opcode::XStoreg,
                 _ => {
                     self.trap(4); // invalid opcode
                     continue;
@@ -417,7 +419,7 @@ impl Vm {
                 let _ = write!(err, "{:6} slot={}", "xcall", imm);
             }
             // D8O8
-            Opcode::Loadn | Opcode::Storen => {
+            Opcode::Loadn | Opcode::Storen | Opcode::XLoadg | Opcode::XStoreg => {
                 let d = if next < code.len() { code[next] } else { 0 };
                 let o = if next + 1 < code.len() {
                     code[next + 1]
@@ -871,6 +873,13 @@ impl Vm {
             // Cross-unit call (not supported in tracer yet)
             Opcode::XCall => {
                 let _slot = self.fetch_u8() as u16 | ((self.fetch_u8() as u16) << 8);
+                self.trap(4); // invalid opcode in single-unit tracer
+            }
+
+            // Cross-unit global access (not supported in tracer yet)
+            Opcode::XLoadg | Opcode::XStoreg => {
+                let _unit_id = self.fetch_u8();
+                let _offset = self.fetch_u8();
                 self.trap(4); // invalid opcode in single-unit tracer
             }
 

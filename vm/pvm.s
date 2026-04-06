@@ -391,7 +391,7 @@ vm_loop:
 
     ; Bounds check: opcode must be < 116 (0x00..0x73)
     mov r0, r2
-    lc r2, 117
+    lc r2, 119
     clu r0, r2
     brt opcode_ok
     la r0, op_invalid
@@ -2132,6 +2132,130 @@ memcmp_greater:
     la r0, vm_loop
     jmp (r0)
 
+; 0x75 — xloadg unit_id8 offset8: load global from another unit
+; Computes: gp + (unit_table[unit_id].global_base + offset) * 3
+; Pushes the value onto eval stack.
+op_xloadg:
+    ; fp = &vm_state
+    ; Fetch unit_id and offset from code[pc]
+    lw r0, 18(fp)           ; r0 = code base
+    lw r2, 0(fp)            ; r2 = pc
+    add r0, r2              ; r0 = &code[pc]
+    lbu r2, 0(r0)           ; r2 = unit_id
+    push r2
+    lbu r2, 1(r0)           ; r2 = offset
+    push r2
+    ; Advance pc by 2
+    lw r0, 0(fp)
+    add r0, 2
+    sw r0, 0(fp)
+    ; Look up unit_table[unit_id].global_base
+    ; unit_table entry is 9 bytes: base_addr(3) + global_base(3) + irt_off(3)
+    ; Stack: [unit_id, offset]
+    pop r0                   ; r0 = offset
+    la r2, xcall_temps
+    sw r0, 0(r2)            ; xcall_temps[0] = offset
+    pop r0                   ; r0 = unit_id
+    ; Compute unit_id * 9: *9 = *8 + *1, *8 = *2*2*2
+    mov r2, r0              ; r2 = uid (saved)
+    add r0, r0              ; r0 = uid*2
+    add r0, r0              ; r0 = uid*4
+    add r0, r0              ; r0 = uid*8
+    add r0, r2              ; r0 = uid*9
+    ; r0 = unit_id * 9
+    lw r2, 36(fp)           ; r2 = unit_table_ptr
+    add r0, r2              ; r0 = &unit_table[unit_id]
+    ; Read global_base from entry offset 3
+    push fp
+    push r0
+    pop fp
+    lw r0, 3(fp)            ; r0 = global_base (word index)
+    pop fp
+    ; Compute (global_base + offset) * 3
+    la r2, xcall_temps
+    lw r2, 0(r2)            ; r2 = offset
+    add r0, r2              ; r0 = global_base + offset
+    ; Multiply by 3
+    mov r2, r0
+    add r0, r0
+    add r0, r2              ; r0 = (global_base + offset) * 3
+    ; Add gp base
+    lw r2, 12(fp)           ; r2 = gp
+    add r0, r2              ; r0 = absolute address
+    ; Load value from that address
+    push fp
+    push r0
+    pop fp
+    lw r0, 0(fp)            ; r0 = value
+    pop fp
+    ; Push onto eval stack
+    lw r2, 3(fp)            ; r2 = esp
+    sw r0, 0(r2)
+    add r2, 3
+    sw r2, 3(fp)
+    la r0, vm_loop
+    jmp (r0)
+
+; 0x76 — xstoreg unit_id8 offset8: store to global in another unit
+; Pops value from eval stack, stores at gp + (unit_table[unit_id].global_base + offset) * 3
+op_xstoreg:
+    ; fp = &vm_state
+    ; Fetch unit_id and offset from code[pc]
+    lw r0, 18(fp)
+    lw r2, 0(fp)
+    add r0, r2
+    lbu r2, 0(r0)           ; r2 = unit_id
+    push r2
+    lbu r2, 1(r0)           ; r2 = offset
+    push r2
+    ; Advance pc by 2
+    lw r0, 0(fp)
+    add r0, 2
+    sw r0, 0(fp)
+    ; Pop value from eval stack
+    lw r2, 3(fp)
+    add r2, -3
+    sw r2, 3(fp)
+    lw r0, 0(r2)            ; r0 = value to store
+    la r2, xcall_temps
+    sw r0, 3(r2)            ; xcall_temps[3] = value
+    ; Compute target address (same as xloadg)
+    pop r0                   ; r0 = offset
+    la r2, xcall_temps
+    sw r0, 0(r2)            ; xcall_temps[0] = offset
+    pop r0                   ; r0 = unit_id
+    ; unit_id * 9
+    mov r2, r0
+    add r0, r0
+    add r0, r0
+    add r0, r0              ; r0 = uid*8
+    add r0, r2              ; r0 = uid*9
+    lw r2, 36(fp)           ; r2 = unit_table_ptr
+    add r0, r2              ; r0 = &unit_table[unit_id]
+    push fp
+    push r0
+    pop fp
+    lw r0, 3(fp)            ; r0 = global_base
+    pop fp
+    la r2, xcall_temps
+    lw r2, 0(r2)            ; r2 = offset
+    add r0, r2              ; r0 = global_base + offset
+    mov r2, r0
+    add r0, r0
+    add r0, r2              ; r0 = (global_base + offset) * 3
+    lw r2, 12(fp)           ; r2 = gp
+    add r0, r2              ; r0 = absolute address
+    ; Store value
+    la r2, xcall_temps
+    lw r2, 3(r2)            ; r2 = value
+    push fp
+    push r0
+    pop fp
+    sw r2, 0(fp)            ; mem[addr] = value
+    pop fp
+    la r0, vm_loop
+    jmp (r0)
+
 ; Temporary storage for memcmp
 memcmp_a_tmp:
     .word 0
@@ -2680,6 +2804,9 @@ dispatch_table:
     .word op_jmp_ind
     ; 0x74: Cross-unit call
     .word op_xcall
+    ; 0x75-0x76: Cross-unit global access
+    .word op_xloadg
+    .word op_xstoreg
 
 ; ============================================================
 ; String constants

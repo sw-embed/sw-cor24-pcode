@@ -118,6 +118,10 @@ pub enum Opcode {
 
     // Cross-unit call (0x74)
     XCall = 0x74,
+
+    // Cross-unit global access (0x75-0x76)
+    XLoadg = 0x75,
+    XStoreg = 0x76,
 }
 
 impl Opcode {
@@ -188,6 +192,9 @@ impl Opcode {
 
             // IMM16 encoding (3 bytes): xcall slot16
             Opcode::XCall => Encoding::Imm16,
+
+            // D8_O8 encoding (3 bytes): xloadg/xstoreg unit_id8 offset8
+            Opcode::XLoadg | Opcode::XStoreg => Encoding::D8O8,
         }
     }
 
@@ -253,6 +260,8 @@ impl Opcode {
             "memcmp" => Some(Opcode::Memcmp),
             "jmp_ind" => Some(Opcode::JmpInd),
             "xcall" => Some(Opcode::XCall),
+            "xloadg" => Some(Opcode::XLoadg),
+            "xstoreg" => Some(Opcode::XStoreg),
             _ => None,
         }
     }
@@ -1184,6 +1193,8 @@ pub fn opcode_size(op: u8) -> usize {
         0x4A | 0x4B => 3,
         // IMM16 (3 bytes): xcall
         0x74 => 3,
+        // D8_O8 (3 bytes): xloadg, xstoreg
+        0x75 | 0x76 => 3,
         // NONE and everything else (1 byte)
         _ => 1,
     }

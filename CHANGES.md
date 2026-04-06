@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-04-06 -- XLOADG/XSTOREG cross-unit global access
+
+- Added XLOADG (0x75) and XSTOREG (0x76) opcodes for cross-unit global access
+- Encoding: D8_O8 (opcode + unit_id + offset = 3 bytes)
+- VM handlers in pvm.s/pvmasm.s: look up unit_table[unit_id].global_base,
+  compute gp + (global_base + offset) * 3, load/store eval stack TOS
+- Added to pa24r (opcode enum, from_mnemonic, opcode_size), pasm.s and
+  pvmasm.s mnemonic tables (type=D8_O8), pv24t tracer (decode + trap)
+- Extended dispatch tables from 117 to 119 entries, bounds check updated
+- All 188 Rust tests + 18 VM tests pass
+
 ## 2026-04-06 -- Linker --unit mode
 
 - Added --unit flag to pl24r for unit compilation mode
