@@ -8,7 +8,7 @@ use pa24r::{LoadedImage, fnv1a_16, load_p24};
 /// .p24m header constants
 pub const P24M_MAGIC: [u8; 4] = [0x50, 0x32, 0x34, 0x4D]; // "P24M"
 pub const P24M_VERSION: u8 = 1;
-pub const P24M_HEADER_SIZE: usize = 21;
+pub const P24M_HEADER_SIZE: usize = 27;
 
 /// A loaded unit with its assigned layout.
 #[derive(Debug)]
@@ -210,15 +210,20 @@ pub fn link_units(binaries: &[(&str, &[u8])]) -> Result<Vec<u8>, LoaderError> {
 
     // Compute layout offsets
     let unit_table_off = P24M_HEADER_SIZE as u32;
-    let unit_table_size = (units.len() * 6) as u32;
+    let unit_table_size = (units.len() as u32) * 9; // 9 bytes per unit
     let irt_off = unit_table_off + unit_table_size;
     let mut irt_size: u32 = 0;
+    // Compute per-unit IRT offsets (absolute within file)
+    let mut per_unit_irt_off: Vec<u32> = Vec::new();
     for irt in &irts {
+        per_unit_irt_off.push(irt_off + irt_size);
         irt_size += 2 + (irt.entries.len() as u32) * 3;
     }
     let code_off = irt_off + irt_size;
     let data_off = code_off + total_code;
     let total_data: u32 = units.iter().map(|u| u.image.data.len() as u32).sum();
+
+    let globals_off = data_off + total_data;
 
     // Header
     image.extend_from_slice(&P24M_MAGIC);
@@ -229,11 +234,14 @@ pub fn link_units(binaries: &[(&str, &[u8])]) -> Result<Vec<u8>, LoaderError> {
     emit_le24(&mut image, total_globals);
     emit_le24(&mut image, unit_table_off);
     emit_le24(&mut image, irt_off);
+    emit_le24(&mut image, code_off);
+    emit_le24(&mut image, globals_off);
 
-    // Unit table (6 bytes per unit: base_addr(3) + global_base(3))
-    for unit in &units {
+    // Unit table (9 bytes per unit: base_addr(3) + global_base(3) + irt_off(3))
+    for (i, unit) in units.iter().enumerate() {
         emit_le24(&mut image, unit.code_base);
         emit_le24(&mut image, unit.global_base);
+        emit_le24(&mut image, per_unit_irt_off[i]);
     }
 
     // IRT (per unit: import_count(2) + [abs_addr(3)] * count)
@@ -260,7 +268,6 @@ pub fn link_units(binaries: &[(&str, &[u8])]) -> Result<Vec<u8>, LoaderError> {
     let globals_bytes = total_globals as usize * 3;
     image.resize(image.len() + globals_bytes, 0);
 
-    let _ = data_off; // used implicitly by layout
     let _ = total_data;
 
     Ok(image)
@@ -310,21 +317,25 @@ pub fn parse_p24m(data: &[u8]) -> Result<P24mImage, LoaderError> {
     let total_globals = read_le24(&data[12..15]);
     let unit_table_off = read_le24(&data[15..18]) as usize;
     let irt_off = read_le24(&data[18..21]) as usize;
+    let code_off = read_le24(&data[21..24]) as usize;
+    let globals_off = read_le24(&data[24..27]) as usize;
 
-    // Parse unit table
+    // Parse unit table (9 bytes per unit)
     let mut unit_entries = Vec::new();
     let mut pos = unit_table_off;
     for _ in 0..unit_count {
-        if pos + 6 > data.len() {
+        if pos + 9 > data.len() {
             return Err(LoaderError::Format("unit table truncated".into()));
         }
         let base_addr = read_le24(&data[pos..pos + 3]);
         let global_base = read_le24(&data[pos + 3..pos + 6]);
+        let unit_irt_off = read_le24(&data[pos + 6..pos + 9]);
         unit_entries.push(P24mUnitEntry {
             base_addr,
             global_base,
+            irt_off: unit_irt_off,
         });
-        pos += 6;
+        pos += 9;
     }
 
     // Parse IRTs
@@ -352,6 +363,8 @@ pub fn parse_p24m(data: &[u8]) -> Result<P24mImage, LoaderError> {
         unit_count,
         total_code,
         total_globals,
+        code_off,
+        globals_off,
         units: unit_entries,
         irts: irt_entries,
     })
@@ -364,6 +377,8 @@ pub struct P24mImage {
     pub unit_count: usize,
     pub total_code: u32,
     pub total_globals: u32,
+    pub code_off: usize,
+    pub globals_off: usize,
     pub units: Vec<P24mUnitEntry>,
     pub irts: Vec<Vec<u32>>,
 }
@@ -372,6 +387,7 @@ pub struct P24mImage {
 pub struct P24mUnitEntry {
     pub base_addr: u32,
     pub global_base: u32,
+    pub irt_off: u32,
 }
 
 fn emit_le24(out: &mut Vec<u8>, val: u32) {

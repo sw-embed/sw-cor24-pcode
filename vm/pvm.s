@@ -60,7 +60,9 @@ _start:
     ; code = indirect via code_ptr (patchable for external .p24 loading)
     la r0, code_ptr
     lw r0, 0(r0)
-    sw r0, 18(fp)
+    ; r0 = address pointed to by code_ptr
+    ; Save it — we'll check for .p24m magic
+    push r0
 
     ; status = 0 (running)
     lc r0, 0
@@ -70,10 +72,171 @@ _start:
     lc r0, 0
     sw r0, 24(fp)
 
+    ; irt_base = 0 (default: no IRT)
+    lc r0, 0
+    sw r0, 27(fp)
+
+    ; unit_count = 0
+    lc r0, 0
+    sw r0, 30(fp)
+
+    ; current_unit = 0
+    lc r0, 0
+    sw r0, 33(fp)
+
+    ; unit_table_ptr = 0
+    lc r0, 0
+    sw r0, 36(fp)
+
+    ; p24m_base = 0
+    lc r0, 0
+    sw r0, 39(fp)
+
     ; Print boot message
     la r0, msg_boot
     la r2, uart_puts
     jal r1, (r2)
+
+    ; Check if code_ptr points to a .p24m image
+    ; Magic bytes: 0x50 0x32 0x34 0x4D ("P24M")
+    pop r0
+    ; r0 = load address
+    push r0                  ; save load_addr
+    push r0                  ; save again for byte reads
+    lbu r0, 0(r0)
+    lc r2, 0x50              ; 'P'
+    ceq r0, r2
+    brf init_raw_code_pop
+    pop r0
+    push r0
+    lbu r0, 1(r0)
+    lc r2, 0x32              ; '2'
+    ceq r0, r2
+    brf init_raw_code_pop
+    pop r0
+    push r0
+    lbu r0, 2(r0)
+    lc r2, 0x34              ; '4'
+    ceq r0, r2
+    brf init_raw_code_pop
+    pop r0
+    push r0
+    lbu r0, 3(r0)
+    lc r2, 0x4D              ; 'M'
+    ceq r0, r2
+    brf init_raw_code_pop
+    pop r0                   ; discard extra copy
+    la r0, init_p24m
+    jmp (r0)
+
+init_raw_code_pop:
+    pop r0                   ; discard extra load_addr copy
+    la r0, init_raw_code
+    jmp (r0)
+
+    ; ── .p24m detected: parse header ──
+init_p24m:
+    ; r0 = base address of .p24m image
+    ; Header layout:
+    ;   [0..4]  magic "P24M"
+    ;   [4]     version
+    ;   [5..8]  entry_point (LE24)
+    ;   [8]     unit_count
+    ;   [9..12] total_code (LE24)
+    ;   [12..15] total_globals (LE24)
+    ;   [15..18] unit_table_off (LE24)
+    ;   [18..21] irt_off (LE24)
+    ;   [21..24] code_off (LE24)
+    ;   [24..27] globals_off (LE24)
+    pop r0                   ; r0 = load_addr (base)
+    sw r0, 39(fp)            ; vm_state.p24m_base = base
+
+    ; Use p24m_temps as scratch for base addr
+    la r2, p24m_temps
+    sw r0, 3(r2)             ; p24m_temps[3] = base
+
+    ; Read entry_point from offset 5
+    push fp
+    push r0
+    pop fp
+    lw r2, 5(fp)             ; r2 = entry_point (LE24)
+    pop fp
+    la r0, p24m_temps
+    sw r2, 0(r0)             ; p24m_temps[0] = entry_point
+
+    ; Read unit_count from offset 8
+    la r0, p24m_temps
+    lw r0, 3(r0)             ; r0 = base
+    lbu r2, 8(r0)            ; r2 = unit_count
+    sb r2, 30(fp)            ; vm_state.unit_count = unit_count
+
+    ; Read unit_table_off from offset 15
+    push fp
+    push r0
+    pop fp
+    lw r2, 15(fp)            ; r2 = unit_table_off
+    pop fp
+    la r0, p24m_temps
+    lw r0, 3(r0)             ; r0 = base
+    add r2, r0               ; r2 = base + unit_table_off
+    sw r2, 36(fp)            ; vm_state.unit_table_ptr = abs unit table addr
+
+    ; Read unit 0's IRT offset from unit_table[0] + 6
+    ; Unit table entry: base_addr(3) + global_base(3) + irt_off(3)
+    ; unit_table_ptr already set; read irt_off at +6
+    push fp
+    lw r0, 36(fp)            ; r0 = unit_table_ptr
+    push r0
+    pop fp
+    lw r2, 6(fp)             ; r2 = unit 0's irt_off (file-relative)
+    pop fp
+    la r0, p24m_temps
+    lw r0, 3(r0)             ; r0 = base
+    add r2, r0               ; r2 = base + irt_off = abs IRT section addr
+    ; Skip 2-byte import_count prefix → actual IRT entries
+    add r2, 2
+    sw r2, 27(fp)            ; vm_state.irt_base = abs addr of unit 0's IRT entries
+
+    ; Read code_off from offset 21
+    la r0, p24m_temps
+    lw r0, 3(r0)             ; r0 = base
+    push fp
+    push r0
+    pop fp
+    lw r2, 21(fp)            ; r2 = code_off
+    pop fp
+    la r0, p24m_temps
+    lw r0, 3(r0)             ; r0 = base
+    add r2, r0               ; r2 = base + code_off = absolute code addr
+    sw r2, 18(fp)            ; vm_state.code = abs code addr
+
+    ; Read globals_off from offset 24
+    la r0, p24m_temps
+    lw r0, 3(r0)             ; r0 = base
+    push fp
+    push r0
+    pop fp
+    lw r2, 24(fp)            ; r2 = globals_off
+    pop fp
+    la r0, p24m_temps
+    lw r0, 3(r0)             ; r0 = base
+    add r2, r0               ; r2 = base + globals_off = absolute globals addr
+    sw r2, 12(fp)            ; vm_state.gp = abs globals addr
+
+    ; Set pc = entry_point
+    la r0, p24m_temps
+    lw r0, 0(r0)
+    sw r0, 0(fp)             ; vm_state.pc = entry_point
+
+    ; Enter VM main loop
+    la r0, vm_loop
+    jmp (r0)
+
+init_raw_code:
+    ; Not .p24m — treat code_ptr as raw bytecode (existing v1 behavior)
+    pop r0                   ; r0 = load_addr
+    sw r0, 18(fp)            ; vm_state.code = load_addr
+    ; pc already 0, gp already set to globals_seg
 
     ; Enter VM main loop
     la r0, vm_loop
@@ -1936,22 +2099,14 @@ op_xcall:
     or r0, r2               ; r0 = slot (16-bit)
     push r0                  ; save slot
 
-    ; 2. Advance pc by 2 (skip slot operand)
+    ; 2. Advance pc by 2 (skip slot operand), save as return_pc
     lw r0, 0(fp)
     add r0, 2
-    push r0                  ; save return_pc on COR24 stack
-
-    ; 3. Look up IRT: target = mem[irt_base + slot * 3]
-    pop r0                   ; r0 = return_pc
-    push r0                  ; re-save return_pc
-    pop r0                   ; r0 = return_pc (keep on stack)
-    ; Need to get slot back - it's under return_pc on stack
-    ; Let me reorganize...
-    ; COR24 stack: [slot, return_pc]  (return_pc on top)
-    ; I need slot. Use xcall_temps.
-    pop r0                   ; r0 = return_pc
     la r2, xcall_temps
     sw r0, 0(r2)            ; xcall_temps[0] = return_pc
+
+    ; 3. Look up IRT: target = mem[irt_base + slot * 3]
+    ; COR24 stack: [slot]
     pop r0                   ; r0 = slot
     ; Compute slot * 3
     mov r2, r0
@@ -2493,6 +2648,13 @@ nonlocal_temps:
     .word 0
     ; [6] value (for storen)
 
+; Temporary storage for .p24m header parsing (2 words = 6 bytes)
+p24m_temps:
+    .word 0
+    ; [0] entry_point
+    .word 0
+    ; [3] base address
+
 ; Temporary storage for xcall handler (2 words = 6 bytes)
 xcall_temps:
     .word 0
@@ -2501,7 +2663,7 @@ xcall_temps:
     ; [3] target_pc
 
 ; ============================================================
-; VM state struct (12 words = 36 bytes)
+; VM state struct (14 words = 42 bytes)
 ; ============================================================
 vm_state:
     .word 0
@@ -2528,6 +2690,10 @@ vm_state:
     ; unit_count (offset 30) — number of loaded units (low byte)
     .word 0
     ; current_unit (offset 33) — currently executing unit ID (low byte)
+    .word 0
+    ; unit_table_ptr (offset 36) — absolute address of unit table
+    .word 0
+    ; p24m_base (offset 39) — base address of loaded .p24m image (0 if none)
 
 ; ============================================================
 ; Memory segments

@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-04-06 -- VM .p24m multi-unit image support
+
+- pvm.s _start detects .p24m magic ("P24M") at code_ptr and parses the
+  header: reads entry_point, unit_count, unit_table, IRT base, code
+  segment base, globals segment base
+- Extended vm_state from 36 to 42 bytes (14 words): added unit_table_ptr
+  (offset 36) and p24m_base (offset 39) for runtime lookups
+- Extended .p24m format: header now 27 bytes (was 21), added code_offset
+  and globals_offset fields; unit table entries now 9 bytes (was 6),
+  added per-unit irt_off for direct IRT lookup
+- Fixed critical op_xcall bug: return_pc was being overwritten by slot
+  value due to incorrect COR24 stack ordering — save return_pc to
+  xcall_temps before popping slot
+- Backward compatible: v1 .p24 and raw bytecode still work (magic check
+  falls through to init_raw_code)
+- End-to-end verified: app unit xcalls mathlib.double(21)→42='*'
+  across two independently compiled .p24 units via .p24m image
+- pvmasm.s vm_state kept in sync (42 bytes)
+- Added t17 multi-unit test .spc files (app + lib)
+- All 176 Rust tests + 18 VM tests pass
+
 ## 2026-04-06 -- P24 multi-unit loader (p24-load)
 
 - New Rust binary crate loader/ (p24-load) in workspace

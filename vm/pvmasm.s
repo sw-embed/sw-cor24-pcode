@@ -5684,7 +5684,7 @@ msg_trap_prefix:
     ; "TRAP \0" (space, no newline — code digit and \n printed separately)
 
 ; ============================================================
-; VM state struct (12 words = 36 bytes)
+; VM state struct (14 words = 42 bytes)
 ; ============================================================
 vm_state:
     .word 0
@@ -5711,6 +5711,10 @@ vm_state:
     ; unit_count (offset 30) — number of loaded units (low byte)
     .word 0
     ; current_unit (offset 33) — currently executing unit ID (low byte)
+    .word 0
+    ; unit_table_ptr (offset 36) — absolute address of unit table
+    .word 0
+    ; p24m_base (offset 39) — base address of loaded .p24m image (0 if none)
 
 ; ============================================================
 ; Temporary storage for ret handler (5 words = 15 bytes)
