@@ -1329,6 +1329,17 @@ hi_p1_not_t2:
     jmp (r0)
 hi_p1_not_t3:
     ; type 4 (D8_O8): +2
+    lc r2, 4
+    ceq r0, r2
+    brf hi_p1_not_t4
+    la r2, code_addr
+    lw r0, 0(r2)
+    add r0, 2
+    sw r0, 0(r2)
+    la r0, hi_p1_done
+    jmp (r0)
+hi_p1_not_t4:
+    ; type 5 (IMM16): +2
     la r2, code_addr
     lw r0, 0(r2)
     add r0, 2
@@ -1399,6 +1410,11 @@ hi_p2_not_t2:
     jmp (r0)
 hi_p2_not_t3:
     ; type 4 (D8_O8): read two tokens, emit byte + byte
+    la r2, cur_optype
+    lbu r0, 0(r2)
+    lc r2, 4
+    ceq r0, r2
+    brf hi_p2_not_t4
     la r2, next_token
     jal r1, (r2)
     la r2, resolve_operand
@@ -1410,6 +1426,23 @@ hi_p2_not_t3:
     la r2, resolve_operand
     jal r1, (r2)
     la r2, emit_byte
+    jal r1, (r2)
+    la r0, hi_p2_done
+    jmp (r0)
+hi_p2_not_t4:
+    ; type 5 (IMM16): read token, emit lo byte + hi byte
+    la r2, next_token
+    jal r1, (r2)
+    la r2, resolve_operand
+    jal r1, (r2)
+    ; r0 = resolved value; emit low byte then high byte
+    push r0
+    la r2, emit_byte         ; emit low byte (r0 & 0xFF)
+    jal r1, (r2)
+    pop r0
+    lc r2, 8
+    shr r0, r2               ; r0 >>= 8
+    la r2, emit_byte         ; emit high byte
     jal r1, (r2)
 
 hi_p2_done:
@@ -2276,9 +2309,9 @@ vm_loop:
     add r0, 1
     sw r0, 0(fp)
 
-    ; Bounds check: opcode must be < 115 (0x00..0x72)
+    ; Bounds check: opcode must be < 116 (0x00..0x73)
     mov r0, r2
-    lc r2, 115
+    lc r2, 116
     clu r0, r2
     brt opcode_ok
     la r0, op_invalid
@@ -4303,7 +4336,7 @@ op_stub:
     jmp (r0)
 
 ; ============================================================
-; Dispatch table (115 entries: opcodes 0x00 through 0x72)
+; Dispatch table (116 entries: opcodes 0x00 through 0x73)
 ; Each entry is a .word (3 bytes) holding the handler address
 ; ============================================================
 dispatch_table:
@@ -4555,6 +4588,8 @@ mnem_table:
     .byte 109, 101, 109, 99, 109, 112, 0, 114, 0
     ; "jmp_ind" opcode=115 type=NONE
     .byte 106, 109, 112, 95, 105, 110, 100, 0, 115, 0
+    ; "xcall" opcode=116 type=IMM16
+    .byte 120, 99, 97, 108, 108, 0, 116, 5
     ; End sentinel
     .byte 0
 

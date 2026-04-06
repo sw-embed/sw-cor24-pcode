@@ -1,0 +1,1 @@
+Implemented JMP_IND (0x73) indirect jump opcode across all implementations: pvm.s handler (pop addr, set pc), pasm.s mnemonic, pa24r Rust assembler, pv24t tracer. Added t15-jmp_ind.spc test (basic, chained, computed jumps). Updated design.md, CHANGES.md, demo.sh. All 152 Rust tests pass.

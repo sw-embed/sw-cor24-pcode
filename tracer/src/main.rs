@@ -292,6 +292,7 @@ impl Vm {
                 0x71 => Opcode::Memset,
                 0x72 => Opcode::Memcmp,
                 0x73 => Opcode::JmpInd,
+                0x74 => Opcode::XCall,
                 _ => {
                     self.trap(4); // invalid opcode
                     continue;
@@ -405,6 +406,15 @@ impl Vm {
                     0
                 };
                 let _ = write!(err, "{:6} {} 0x{:06X}", "calln", d, a);
+            }
+            // Imm16
+            Opcode::XCall => {
+                let imm = if next + 1 < code.len() {
+                    code[next] as u16 | ((code[next + 1] as u16) << 8)
+                } else {
+                    0
+                };
+                let _ = write!(err, "{:6} slot={}", "xcall", imm);
             }
             // D8O8
             Opcode::Loadn | Opcode::Storen => {
@@ -856,6 +866,12 @@ impl Vm {
                     }
                 }
                 self.push_eval(result);
+            }
+
+            // Cross-unit call (not supported in tracer yet)
+            Opcode::XCall => {
+                let _slot = self.fetch_u8() as u16 | ((self.fetch_u8() as u16) << 8);
+                self.trap(4); // invalid opcode in single-unit tracer
             }
 
             // Indirect jump

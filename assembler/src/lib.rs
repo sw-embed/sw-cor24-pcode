@@ -5,6 +5,7 @@ pub mod lexer;
 // .p24 header constants
 pub const P24_MAGIC: [u8; 4] = [0x50, 0x32, 0x34, 0x00]; // "P24\0"
 pub const P24_VERSION: u8 = 1;
+pub const P24_VERSION_2: u8 = 2;
 pub const P24_HEADER_SIZE: usize = 18;
 
 /// Encoding format for p-code instructions.
@@ -20,6 +21,8 @@ pub enum Encoding {
     D8A24,
     /// 3 bytes: [op, d8, o8]
     D8O8,
+    /// 3 bytes: [op, lo, hi] — 16-bit LE operand
+    Imm16,
 }
 
 impl Encoding {
@@ -31,6 +34,7 @@ impl Encoding {
             Encoding::Imm24 => 4,
             Encoding::D8A24 => 5,
             Encoding::D8O8 => 3,
+            Encoding::Imm16 => 3,
         }
     }
 }
@@ -111,6 +115,9 @@ pub enum Opcode {
 
     // Indirect jump (0x73)
     JmpInd = 0x73,
+
+    // Cross-unit call (0x74)
+    XCall = 0x74,
 }
 
 impl Opcode {
@@ -178,6 +185,9 @@ impl Opcode {
 
             // D8_O8 encoding (3 bytes): loadn/storen depth8 off8
             Opcode::Loadn | Opcode::Storen => Encoding::D8O8,
+
+            // IMM16 encoding (3 bytes): xcall slot16
+            Opcode::XCall => Encoding::Imm16,
         }
     }
 
@@ -242,9 +252,46 @@ impl Opcode {
             "memset" => Some(Opcode::Memset),
             "memcmp" => Some(Opcode::Memcmp),
             "jmp_ind" => Some(Opcode::JmpInd),
+            "xcall" => Some(Opcode::XCall),
             _ => None,
         }
     }
+}
+
+/// An exported procedure in a unit.
+#[derive(Debug, Clone)]
+pub struct ExportEntry {
+    pub name: String,
+    pub offset: u32,
+    pub nargs: u8,
+}
+
+/// An imported procedure from an external unit.
+#[derive(Debug, Clone)]
+pub struct ImportEntry {
+    pub unit_name: String,
+    pub proc_name: String,
+    pub slot: u16,
+}
+
+/// Unit metadata collected from .unit/.import/.export/.extern directives.
+#[derive(Debug, Clone, Default)]
+pub struct UnitInfo {
+    pub name: String,
+    pub exports: Vec<ExportEntry>,
+    pub imports: Vec<ImportEntry>,
+    pub imported_units: Vec<String>,
+}
+
+/// Compute a 16-bit FNV-1a hash of a byte string.
+pub fn fnv1a_16(data: &[u8]) -> u16 {
+    // FNV-1a 32-bit, then fold to 16 bits via xor-fold
+    let mut h: u32 = 0x811c_9dc5;
+    for &b in data {
+        h ^= b as u32;
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    ((h >> 16) ^ (h & 0xFFFF)) as u16
 }
 
 /// Result of assembling .spc source.
@@ -254,6 +301,8 @@ pub struct AssemblyResult {
     pub entry_point: u32,
     pub global_count: u32,
     pub errors: Vec<AssemblyError>,
+    /// Present when source uses `.unit` directive (unit mode).
+    pub unit_info: Option<UnitInfo>,
 }
 
 /// An error encountered during assembly.
@@ -275,6 +324,8 @@ pub struct LoadedImage {
     pub code: Vec<u8>,
     pub data: Vec<u8>,
     pub global_count: u32,
+    pub version: u8,
+    pub unit_info: Option<UnitInfo>,
 }
 
 /// Error loading a .p24 binary.
@@ -301,8 +352,8 @@ use std::collections::HashMap;
 
 use lexer::{Token, tokenize};
 
-/// Metadata directives from pl24r that we silently skip.
-const METADATA_DIRECTIVES: &[&str] = &[".module", ".export", ".extern", ".endmodule"];
+/// Metadata directives from pl24r that we silently skip (non-unit mode only).
+const METADATA_DIRECTIVES: &[&str] = &[".module", ".endmodule"];
 
 /// Symbol type for tracking what kind of entity a name refers to.
 #[derive(Debug, Clone, Copy)]
@@ -311,6 +362,8 @@ enum SymType {
     Data,
     Global,
     Const,
+    /// External symbol (import slot index stored in value).
+    Extern,
 }
 
 /// A symbol table entry.
@@ -331,6 +384,13 @@ pub fn assemble(source: &str) -> AssemblyResult {
     let mut data_offset: u32 = 0;
     let mut global_offset: u32 = 0;
     let mut entry_point: Option<u32> = None;
+
+    // Unit mode state
+    let mut unit_name: Option<String> = None;
+    let mut export_names: Vec<(String, u8)> = Vec::new(); // (name, nargs)
+    let mut imported_units: Vec<String> = Vec::new();
+    let mut extern_slots: Vec<(String, String)> = Vec::new(); // (proc_name, unit_name) — unit inferred
+    let mut next_extern_slot: u16 = 0;
 
     // ── Pass 1: Symbol Collection ──
 
@@ -457,6 +517,72 @@ pub fn assemble(source: &str) -> AssemblyResult {
                             errors.push(AssemblyError {
                                 line,
                                 message: ".const missing name".into(),
+                            });
+                        }
+                        skip_to_newline(&tokens, &mut i);
+                    }
+                    ".unit" => {
+                        let name = expect_identifier(&tokens, &mut i);
+                        if let Some(name) = name {
+                            unit_name = Some(name);
+                        } else {
+                            errors.push(AssemblyError {
+                                line,
+                                message: ".unit missing name".into(),
+                            });
+                        }
+                        skip_to_newline(&tokens, &mut i);
+                    }
+                    ".import" => {
+                        let name = expect_identifier(&tokens, &mut i);
+                        if let Some(name) = name {
+                            if !imported_units.contains(&name) {
+                                imported_units.push(name);
+                            }
+                        } else {
+                            errors.push(AssemblyError {
+                                line,
+                                message: ".import missing unit name".into(),
+                            });
+                        }
+                        skip_to_newline(&tokens, &mut i);
+                    }
+                    ".export" => {
+                        let name = expect_identifier(&tokens, &mut i);
+                        let nargs = expect_number(&tokens, &mut i).unwrap_or(-1);
+                        if let Some(name) = name {
+                            export_names.push((name, nargs as u8));
+                        } else {
+                            errors.push(AssemblyError {
+                                line,
+                                message: ".export missing symbol name".into(),
+                            });
+                        }
+                        skip_to_newline(&tokens, &mut i);
+                    }
+                    ".extern" => {
+                        let name = expect_identifier(&tokens, &mut i);
+                        let nargs = expect_number(&tokens, &mut i).unwrap_or(-1);
+                        if let Some(name) = name {
+                            let slot = next_extern_slot;
+                            next_extern_slot += 1;
+                            // Infer unit name: use the most recently declared .import
+                            let unit = imported_units.last().cloned().unwrap_or_default();
+                            extern_slots.push((name.clone(), unit));
+                            if let Err(e) = insert_symbol(
+                                &mut symbols,
+                                &name,
+                                slot as u32,
+                                SymType::Extern,
+                                line,
+                            ) {
+                                errors.push(e);
+                            }
+                            let _ = nargs; // stored via extern_slots index
+                        } else {
+                            errors.push(AssemblyError {
+                                line,
+                                message: ".extern missing symbol name".into(),
                             });
                         }
                         skip_to_newline(&tokens, &mut i);
@@ -635,6 +761,20 @@ pub fn assemble(source: &str) -> AssemblyResult {
                             code.push(o as u8);
                             skip_to_newline(&tokens, &mut i);
                         }
+                        Encoding::Imm16 => {
+                            // xcall: operand is an extern symbol, resolve to slot index
+                            let val = resolve_operand(
+                                &tokens,
+                                &mut i,
+                                &symbols,
+                                line,
+                                &mut errors,
+                                None, // no global base adjustment
+                            );
+                            code.push(val as u8);
+                            code.push((val >> 8) as u8);
+                            skip_to_newline(&tokens, &mut i);
+                        }
                     }
                 } else {
                     // Unknown mnemonic — already reported in pass 1
@@ -649,25 +789,74 @@ pub fn assemble(source: &str) -> AssemblyResult {
         }
     }
 
+    // Build unit info if in unit mode
+    let unit_info = unit_name.map(|name| {
+        let exports = export_names
+            .iter()
+            .map(|(sym_name, nargs)| {
+                let offset = symbols.get(sym_name).map(|s| s.value).unwrap_or(0);
+                ExportEntry {
+                    name: sym_name.clone(),
+                    offset,
+                    nargs: *nargs,
+                }
+            })
+            .collect();
+        let imports = extern_slots
+            .iter()
+            .enumerate()
+            .map(|(slot, (proc_name, uname))| ImportEntry {
+                unit_name: uname.clone(),
+                proc_name: proc_name.clone(),
+                slot: slot as u16,
+            })
+            .collect();
+        UnitInfo {
+            name,
+            exports,
+            imports,
+            imported_units,
+        }
+    });
+
+    // Validate exports reference defined symbols
+    if let Some(ref info) = unit_info {
+        for exp in &info.exports {
+            if !symbols.contains_key(&exp.name) {
+                errors.push(AssemblyError {
+                    line: 0,
+                    message: format!(".export '{}' not defined", exp.name),
+                });
+            }
+        }
+    }
+
     AssemblyResult {
         code,
         data: data_bytes,
         entry_point: entry_point.unwrap_or(0),
         global_count,
         errors,
+        unit_info,
     }
 }
 
 /// Assemble .spc source and produce a complete .p24 binary.
+///
+/// Emits v1 format for non-unit sources, v2 format when `.unit` is present.
 pub fn assemble_to_p24(source: &str) -> Result<Vec<u8>, Vec<AssemblyError>> {
     let result = assemble(source);
     if !result.errors.is_empty() {
         return Err(result.errors);
     }
 
+    if let Some(ref unit_info) = result.unit_info {
+        return Ok(emit_p24_v2(&result, unit_info));
+    }
+
     let mut binary = Vec::with_capacity(P24_HEADER_SIZE + result.code.len() + result.data.len());
 
-    // Header
+    // Header (v1)
     binary.extend_from_slice(&P24_MAGIC);
     binary.push(P24_VERSION);
     emit_le24(&mut binary, result.entry_point);
@@ -683,6 +872,102 @@ pub fn assemble_to_p24(source: &str) -> Result<Vec<u8>, Vec<AssemblyError>> {
     Ok(binary)
 }
 
+/// Emit a v2 .p24 binary with export and import tables.
+fn emit_p24_v2(result: &AssemblyResult, unit_info: &UnitInfo) -> Vec<u8> {
+    let mut binary = Vec::new();
+
+    // Build string table (null-terminated names)
+    let mut string_table: Vec<u8> = Vec::new();
+    // Unit name
+    string_table.extend_from_slice(unit_info.name.as_bytes());
+    string_table.push(0);
+
+    // Export names
+    let mut export_name_offsets = Vec::new();
+    for exp in &unit_info.exports {
+        export_name_offsets.push(string_table.len() as u16);
+        string_table.extend_from_slice(exp.name.as_bytes());
+        string_table.push(0);
+    }
+
+    // Import names (unit_name + proc_name)
+    let mut import_name_offsets = Vec::new();
+    for imp in &unit_info.imports {
+        let unit_off = string_table.len() as u16;
+        string_table.extend_from_slice(imp.unit_name.as_bytes());
+        string_table.push(0);
+        let proc_off = string_table.len() as u16;
+        string_table.extend_from_slice(imp.proc_name.as_bytes());
+        string_table.push(0);
+        import_name_offsets.push((unit_off, proc_off));
+    }
+
+    let _ = export_name_offsets;
+    let _ = import_name_offsets;
+
+    let export_count = unit_info.exports.len() as u16;
+    let import_count = unit_info.imports.len() as u16;
+    let flags: u8 =
+        (if export_count > 0 { 0x01 } else { 0 }) | (if import_count > 0 { 0x02 } else { 0 });
+
+    // ── Header (fixed part, same offsets as v1 + extensions) ──
+    binary.extend_from_slice(&P24_MAGIC);
+    binary.push(P24_VERSION_2);
+    emit_le24(&mut binary, result.entry_point);
+    emit_le24(&mut binary, result.code.len() as u32);
+    emit_le24(&mut binary, result.data.len() as u32);
+    emit_le24(&mut binary, result.global_count);
+    binary.push(flags);
+
+    // ── V2 extended header ──
+    // Export count (LE16)
+    binary.push(export_count as u8);
+    binary.push((export_count >> 8) as u8);
+    // Import count (LE16)
+    binary.push(import_count as u8);
+    binary.push((import_count >> 8) as u8);
+    // Unit name length (LE16)
+    let name_len = unit_info.name.len() as u16;
+    binary.push(name_len as u8);
+    binary.push((name_len >> 8) as u8);
+    // Unit name (UTF-8, not null-terminated)
+    binary.extend_from_slice(unit_info.name.as_bytes());
+
+    // ── Export table (5 bytes each: name_hash(2) + offset(3)) ──
+    for exp in &unit_info.exports {
+        let hash = fnv1a_16(exp.name.as_bytes());
+        binary.push(hash as u8);
+        binary.push((hash >> 8) as u8);
+        emit_le24(&mut binary, exp.offset);
+    }
+
+    // ── Import table (5 bytes each: unit_hash(2) + name_hash(2) + slot(1)) ──
+    for imp in &unit_info.imports {
+        let unit_hash = fnv1a_16(imp.unit_name.as_bytes());
+        binary.push(unit_hash as u8);
+        binary.push((unit_hash >> 8) as u8);
+        let name_hash = fnv1a_16(imp.proc_name.as_bytes());
+        binary.push(name_hash as u8);
+        binary.push((name_hash >> 8) as u8);
+        binary.push(imp.slot as u8);
+    }
+
+    // ── String table ──
+    // Length prefix (LE16) so loader knows where strings end
+    let st_len = string_table.len() as u16;
+    binary.push(st_len as u8);
+    binary.push((st_len >> 8) as u8);
+    binary.extend_from_slice(&string_table);
+
+    // ── Code segment ──
+    binary.extend_from_slice(&result.code);
+
+    // ── Data segment ──
+    binary.extend_from_slice(&result.data);
+
+    binary
+}
+
 /// Load a .p24 binary into a LoadedImage.
 pub fn load_p24(binary: &[u8]) -> Result<LoadedImage, LoadError> {
     if binary.len() < P24_HEADER_SIZE {
@@ -692,7 +977,7 @@ pub fn load_p24(binary: &[u8]) -> Result<LoadedImage, LoadError> {
         return Err(LoadError::BadMagic);
     }
     let version = binary[4];
-    if version != P24_VERSION {
+    if version != P24_VERSION && version != P24_VERSION_2 {
         return Err(LoadError::BadVersion(version));
     }
 
@@ -701,17 +986,149 @@ pub fn load_p24(binary: &[u8]) -> Result<LoadedImage, LoadError> {
     let data_size = read_le24(&binary[11..14]) as usize;
     let global_count = read_le24(&binary[14..17]);
 
-    let body = &binary[P24_HEADER_SIZE..];
-    if body.len() < code_size + data_size {
+    if version == P24_VERSION {
+        let body = &binary[P24_HEADER_SIZE..];
+        if body.len() < code_size + data_size {
+            return Err(LoadError::Truncated);
+        }
+        return Ok(LoadedImage {
+            entry_point,
+            code: body[..code_size].to_vec(),
+            data: body[code_size..code_size + data_size].to_vec(),
+            global_count,
+            version,
+            unit_info: None,
+        });
+    }
+
+    // v2: parse extended header and tables
+    let flags = binary[17];
+    let mut pos = P24_HEADER_SIZE;
+
+    if binary.len() < pos + 6 {
         return Err(LoadError::Truncated);
     }
+    let export_count = read_le16(&binary[pos..]) as usize;
+    pos += 2;
+    let import_count = read_le16(&binary[pos..]) as usize;
+    pos += 2;
+    let name_len = read_le16(&binary[pos..]) as usize;
+    pos += 2;
+
+    if binary.len() < pos + name_len {
+        return Err(LoadError::Truncated);
+    }
+    let unit_name = String::from_utf8_lossy(&binary[pos..pos + name_len]).to_string();
+    pos += name_len;
+
+    // Export table: 5 bytes each (hash(2) + offset(3))
+    let export_table_size = export_count * 5;
+    if binary.len() < pos + export_table_size {
+        return Err(LoadError::Truncated);
+    }
+    let mut exports = Vec::with_capacity(export_count);
+    for _ in 0..export_count {
+        let _hash = read_le16(&binary[pos..]);
+        pos += 2;
+        let offset = read_le24(&binary[pos..]);
+        pos += 3;
+        exports.push(ExportEntry {
+            name: String::new(), // filled from string table below
+            offset,
+            nargs: 0,
+        });
+    }
+
+    // Import table: 5 bytes each (unit_hash(2) + name_hash(2) + slot(1))
+    let import_table_size = import_count * 5;
+    if binary.len() < pos + import_table_size {
+        return Err(LoadError::Truncated);
+    }
+    let mut imports = Vec::with_capacity(import_count);
+    for _ in 0..import_count {
+        let _unit_hash = read_le16(&binary[pos..]);
+        pos += 2;
+        let _name_hash = read_le16(&binary[pos..]);
+        pos += 2;
+        let slot = binary[pos] as u16;
+        pos += 1;
+        imports.push(ImportEntry {
+            unit_name: String::new(), // filled from string table
+            proc_name: String::new(),
+            slot,
+        });
+    }
+
+    // String table: length(2) + data
+    if binary.len() < pos + 2 {
+        return Err(LoadError::Truncated);
+    }
+    let st_len = read_le16(&binary[pos..]) as usize;
+    pos += 2;
+    if binary.len() < pos + st_len {
+        return Err(LoadError::Truncated);
+    }
+    let string_table = &binary[pos..pos + st_len];
+    pos += st_len;
+
+    // Parse string table: null-terminated strings
+    // First string is unit name (already parsed), then export names, then import pairs
+    let strings: Vec<&str> = {
+        let mut v = Vec::new();
+        let mut start = 0;
+        for (i, &b) in string_table.iter().enumerate() {
+            if b == 0 {
+                v.push(std::str::from_utf8(&string_table[start..i]).unwrap_or(""));
+                start = i + 1;
+            }
+        }
+        v
+    };
+
+    // Fill export names (strings[1..=export_count])
+    for (i, exp) in exports.iter_mut().enumerate() {
+        if i + 1 < strings.len() {
+            exp.name = strings[i + 1].to_string();
+        }
+    }
+
+    // Fill import names (strings after exports, pairs of unit_name + proc_name)
+    let import_str_start = 1 + export_count;
+    for (i, imp) in imports.iter_mut().enumerate() {
+        let idx = import_str_start + i * 2;
+        if idx + 1 < strings.len() {
+            imp.unit_name = strings[idx].to_string();
+            imp.proc_name = strings[idx + 1].to_string();
+        }
+    }
+
+    let _ = flags; // validated by presence of tables
+
+    // Code and data segments
+    if binary.len() < pos + code_size + data_size {
+        return Err(LoadError::Truncated);
+    }
+    let code = binary[pos..pos + code_size].to_vec();
+    pos += code_size;
+    let data = binary[pos..pos + data_size].to_vec();
 
     Ok(LoadedImage {
         entry_point,
-        code: body[..code_size].to_vec(),
-        data: body[code_size..code_size + data_size].to_vec(),
+        code,
+        data,
         global_count,
+        version,
+        unit_info: Some(UnitInfo {
+            name: unit_name,
+            exports,
+            imports,
+            imported_units: Vec::new(), // not stored in binary
+        }),
     })
+}
+
+fn read_le16(bytes: &[u8]) -> u16 {
+    u16::from(bytes[0]) | (u16::from(bytes[1]) << 8)
 }
 
 /// Relocate push instructions that reference the data or global segments.
@@ -749,7 +1166,7 @@ pub fn relocate_data_refs(code: &mut [u8], code_size: u32, data_size: u32, load_
 }
 
 /// Get instruction size from raw opcode byte, without requiring a valid Opcode enum value.
-fn opcode_size(op: u8) -> usize {
+pub fn opcode_size(op: u8) -> usize {
     // Map opcode byte to encoding size using the same logic as Opcode::encoding().
     // This handles unknown opcodes gracefully (treats as 1 byte).
     match op {
@@ -761,6 +1178,8 @@ fn opcode_size(op: u8) -> usize {
         0x35 => 5,
         // D8_O8 (3 bytes): loadn, storen
         0x4A | 0x4B => 3,
+        // IMM16 (3 bytes): xcall
+        0x74 => 3,
         // NONE and everything else (1 byte)
         _ => 1,
     }
@@ -859,6 +1278,10 @@ fn resolve_operand(
                             // Raw word index for loadg/storeg/addrg
                             sym.value / 3
                         }
+                    }
+                    SymType::Extern => {
+                        // Import slot index (used by xcall)
+                        sym.value
                     }
                     _ => sym.value,
                 }

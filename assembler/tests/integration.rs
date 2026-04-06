@@ -1,4 +1,6 @@
 use pa24r::*;
+#[allow(unused_imports)]
+use std::collections::BTreeSet;
 
 #[test]
 fn assemble_hello() {
@@ -286,4 +288,341 @@ fn opcode_table_matches_pvm_s() {
             op.size()
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Sync tests: pvm.s, pvmasm.s, and pasm.s must agree on dispatch table size,
+// bounds-check constant, and mnemonic entries.
+// ---------------------------------------------------------------------------
+
+/// Extract the dispatch-table `.word` entries from an assembly source between
+/// `dispatch_table:` and the next `; ====` separator.
+fn dispatch_entries(src: &str) -> Vec<String> {
+    let mut in_table = false;
+    let mut entries = Vec::new();
+    for line in src.lines() {
+        let trimmed = line.trim();
+        if trimmed == "dispatch_table:" {
+            in_table = true;
+            continue;
+        }
+        if !in_table {
+            continue;
+        }
+        if trimmed.starts_with("; ====") {
+            break;
+        }
+        if trimmed.starts_with(".word ") {
+            entries.push(trimmed.to_string());
+        }
+    }
+    entries
+}
+
+/// Extract the bounds-check constant from `lc r2, <N>` that precedes
+/// `brt opcode_ok`.
+fn bounds_check_value(src: &str) -> Option<u32> {
+    let lines: Vec<&str> = src.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        if line.contains("brt opcode_ok") {
+            for j in (0..i).rev() {
+                let t = lines[j].trim();
+                if t.starts_with("lc r2,") {
+                    let val = t.strip_prefix("lc r2,")?.trim();
+                    return val.parse().ok();
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Extract mnemonic entries from `; "name" opcode=N type=T` comment lines.
+/// Returns set of (name, opcode).
+fn mnemonic_entries(src: &str) -> BTreeSet<(String, u32)> {
+    let mut set = BTreeSet::new();
+    for line in src.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("; \"")
+            && let Some(quote_end) = rest.find('"')
+        {
+            let name = &rest[..quote_end];
+            if let Some(opcode_part) = rest.find("opcode=") {
+                let after = &rest[opcode_part + 7..];
+                let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+                if let Ok(opcode) = num_str.parse::<u32>() {
+                    set.insert((name.to_string(), opcode));
+                }
+            }
+        }
+    }
+    set
+}
+
+#[test]
+fn vm_dispatch_tables_in_sync() {
+    let pvm = include_str!("../../vm/pvm.s");
+    let pvmasm = include_str!("../../vm/pvmasm.s");
+
+    let pvm_entries = dispatch_entries(pvm);
+    let pvmasm_entries = dispatch_entries(pvmasm);
+
+    assert_eq!(
+        pvm_entries.len(),
+        pvmasm_entries.len(),
+        "dispatch table size mismatch: pvm.s has {} entries, pvmasm.s has {}",
+        pvm_entries.len(),
+        pvmasm_entries.len()
+    );
+
+    for (i, (a, b)) in pvm_entries.iter().zip(pvmasm_entries.iter()).enumerate() {
+        assert_eq!(
+            a, b,
+            "dispatch table entry 0x{i:02X} differs: pvm.s has {a}, pvmasm.s has {b}"
+        );
+    }
+}
+
+#[test]
+fn vm_bounds_checks_in_sync() {
+    let pvm = include_str!("../../vm/pvm.s");
+    let pvmasm = include_str!("../../vm/pvmasm.s");
+
+    let pvm_bound = bounds_check_value(pvm).expect("could not find bounds check in pvm.s");
+    let pvmasm_bound = bounds_check_value(pvmasm).expect("could not find bounds check in pvmasm.s");
+
+    assert_eq!(
+        pvm_bound, pvmasm_bound,
+        "bounds check mismatch: pvm.s uses {pvm_bound}, pvmasm.s uses {pvmasm_bound}"
+    );
+
+    let table_size = dispatch_entries(pvm).len() as u32;
+    assert_eq!(
+        pvm_bound, table_size,
+        "bounds check ({pvm_bound}) != dispatch table entry count ({table_size})"
+    );
+}
+
+#[test]
+fn assembler_mnemonic_tables_in_sync() {
+    let pasm = include_str!("../../vm/pasm.s");
+    let pvmasm = include_str!("../../vm/pvmasm.s");
+
+    let pasm_mnemonics = mnemonic_entries(pasm);
+    let pvmasm_mnemonics = mnemonic_entries(pvmasm);
+
+    let only_in_pasm: Vec<_> = pasm_mnemonics.difference(&pvmasm_mnemonics).collect();
+    let only_in_pvmasm: Vec<_> = pvmasm_mnemonics.difference(&pasm_mnemonics).collect();
+
+    assert!(
+        only_in_pasm.is_empty() && only_in_pvmasm.is_empty(),
+        "mnemonic table mismatch:\n  only in pasm.s: {only_in_pasm:?}\n  only in pvmasm.s: {only_in_pvmasm:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// P24 v2 format tests: unit mode with export/import tables
+// ---------------------------------------------------------------------------
+
+#[test]
+fn unit_mode_collects_exports() {
+    let source = "\
+.unit mathlib
+.export add_nums 2
+
+.proc add_nums 2
+    loada 0
+    loada 1
+    add
+    ret 2
+.end
+
+.proc main 0
+    halt
+.end
+";
+    let result = assemble(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let info = result.unit_info.as_ref().expect("should have unit_info");
+    assert_eq!(info.name, "mathlib");
+    assert_eq!(info.exports.len(), 1);
+    assert_eq!(info.exports[0].name, "add_nums");
+    assert_eq!(info.exports[0].offset, 0); // first proc
+}
+
+#[test]
+fn unit_mode_collects_imports() {
+    let source = "\
+.unit app
+.import mathlib
+.extern add_nums 2
+
+.proc main 0
+    push 3
+    push 4
+    xcall add_nums
+    halt
+.end
+";
+    let result = assemble(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let info = result.unit_info.as_ref().expect("should have unit_info");
+    assert_eq!(info.name, "app");
+    assert_eq!(info.imports.len(), 1);
+    assert_eq!(info.imports[0].unit_name, "mathlib");
+    assert_eq!(info.imports[0].proc_name, "add_nums");
+    assert_eq!(info.imports[0].slot, 0);
+    assert_eq!(info.imported_units, vec!["mathlib"]);
+}
+
+#[test]
+fn unit_mode_xcall_encoding() {
+    let source = "\
+.unit app
+.import mathlib
+.extern gcd 2
+.extern factorial 1
+
+.proc main 0
+    push 1
+    push 2
+    xcall gcd
+    push 5
+    xcall factorial
+    halt
+.end
+";
+    let result = assemble(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    // Find xcall opcodes in code
+    let code = &result.code;
+    let mut xcall_slots = Vec::new();
+    let mut pc = 0;
+    while pc < code.len() {
+        if code[pc] == 0x74 {
+            let slot = code[pc + 1] as u16 | ((code[pc + 2] as u16) << 8);
+            xcall_slots.push(slot);
+            pc += 3;
+        } else {
+            pc += opcode_size(code[pc]);
+        }
+    }
+    assert_eq!(xcall_slots, vec![0, 1], "gcd=slot0, factorial=slot1");
+}
+
+#[test]
+fn v2_binary_round_trip() {
+    let source = "\
+.unit mathlib
+.export double 1
+
+.proc double 1
+    loada 0
+    dup
+    add
+    ret 1
+.end
+
+.proc main 0
+    halt
+.end
+";
+    let binary = assemble_to_p24(source).expect("assembly should succeed");
+
+    // Check v2 magic + version
+    assert_eq!(&binary[0..4], &P24_MAGIC);
+    assert_eq!(binary[4], P24_VERSION_2);
+
+    // Round-trip load
+    let loaded = load_p24(&binary).expect("load should succeed");
+    assert_eq!(loaded.version, P24_VERSION_2);
+    let info = loaded.unit_info.as_ref().expect("should have unit_info");
+    assert_eq!(info.name, "mathlib");
+    assert_eq!(info.exports.len(), 1);
+    assert_eq!(info.exports[0].name, "double");
+
+    // Code should match
+    let result = assemble(source);
+    assert_eq!(loaded.code, result.code);
+    assert_eq!(loaded.data, result.data);
+}
+
+#[test]
+fn v2_with_imports_round_trip() {
+    let source = "\
+.unit app
+.import mathlib
+.extern double 1
+
+.proc main 0
+    push 21
+    xcall double
+    halt
+.end
+";
+    let binary = assemble_to_p24(source).expect("assembly should succeed");
+    assert_eq!(binary[4], P24_VERSION_2);
+
+    let loaded = load_p24(&binary).expect("load should succeed");
+    let info = loaded.unit_info.as_ref().expect("should have unit_info");
+    assert_eq!(info.name, "app");
+    assert_eq!(info.imports.len(), 1);
+    assert_eq!(info.imports[0].unit_name, "mathlib");
+    assert_eq!(info.imports[0].proc_name, "double");
+    assert_eq!(info.imports[0].slot, 0);
+}
+
+#[test]
+fn non_unit_mode_still_v1() {
+    // Without .unit directive, should emit v1 (existing behavior)
+    let source = "\
+.module test
+.export main
+.proc main 0
+    halt
+.end
+.endmodule
+";
+    let binary = assemble_to_p24(source).expect("assembly should succeed");
+    assert_eq!(binary[4], P24_VERSION, "should be v1 without .unit");
+
+    let loaded = load_p24(&binary).expect("load should succeed");
+    assert_eq!(loaded.version, P24_VERSION);
+    assert!(loaded.unit_info.is_none());
+}
+
+#[test]
+fn v1_still_loads() {
+    // Existing v1 binaries must continue to load
+    let source = "\
+.proc main 0
+    push 42
+    halt
+.end
+";
+    let binary = assemble_to_p24(source).expect("assembly should succeed");
+    assert_eq!(binary[4], P24_VERSION);
+    let loaded = load_p24(&binary).expect("v1 load should succeed");
+    assert_eq!(loaded.version, P24_VERSION);
+    assert!(loaded.unit_info.is_none());
+}
+
+#[test]
+fn fnv1a_hash_deterministic() {
+    assert_eq!(fnv1a_16(b"gcd"), fnv1a_16(b"gcd"));
+    assert_ne!(fnv1a_16(b"gcd"), fnv1a_16(b"factorial"));
+    assert_ne!(fnv1a_16(b"mathlib"), fnv1a_16(b"app"));
+}
+
+#[test]
+fn xcall_opcode_value_and_size() {
+    assert_eq!(Opcode::XCall as u8, 0x74);
+    assert_eq!(Opcode::XCall.size(), 3);
+    assert_eq!(Opcode::XCall.encoding(), Encoding::Imm16);
+}
+
+#[test]
+fn encoding_imm16_size() {
+    assert_eq!(Encoding::Imm16.size(), 3);
 }

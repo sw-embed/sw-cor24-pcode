@@ -1,0 +1,8 @@
+number = 9
+slug = "xloadg-xstoreg"
+status = "pending"
+description = "Add XLOADG (0x75) and XSTOREG (0x76) opcodes for cross-unit global access. En..."
+role = "production"
+context_files = []
+created_at = "2026-04-05T18:44:54"
+task_type = "vm"

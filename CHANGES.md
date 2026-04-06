@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-04-05 -- P24 v2 binary format with export/import tables
+
+- Extended .p24 binary format to v2 with unit export and import tables
+  for cross-unit procedure calls (load-time resolution design)
+- Added XCall opcode (0x74) with Imm16 encoding (3 bytes: opcode + slot16)
+  to pa24r, pasm.s, pvmasm.s, and pv24t (tracer traps; VM handler in Phase 2)
+- New assembler directives in unit mode: .unit, .import, .export, .extern
+  - .unit <name>: declares source as a named unit (triggers v2 output)
+  - .import <unit>: declares dependency on external unit
+  - .export <sym> [nargs]: marks procedure for export
+  - .extern <sym> [nargs]: declares imported procedure, assigns slot index
+- V2 .p24 header adds: export table (hash + offset), import table
+  (unit_hash + name_hash + slot), string table, unit name
+- Backward compatible: v1 files assemble/load unchanged; v2 only emitted
+  when .unit directive is present
+- Added Imm16 encoding type (type=5) to pasm.s and pvmasm.s mnemonic tables
+  and both pass 1 (size) / pass 2 (emit) handlers
+- Added FNV-1a 16-bit hash function for export/import name matching
+- Made opcode_size() public for use in tests
+- 10 new integration tests for v2 format, xcall encoding, round-trip
+- Added design document: docs/load-time-resolution.md
+- All 165 Rust tests pass
+
 ## 2026-04-01 -- JMP_IND VM opcode (Tier 2)
 
 - Added JMP_IND (0x73) as VM opcode across all implementations:
