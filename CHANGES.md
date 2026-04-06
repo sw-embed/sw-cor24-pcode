@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-04-06 -- XCALL VM handler and IRT dispatch
+
+- Added op_xcall handler to pvm.s and pvmasm.s: reads 16-bit IRT slot
+  from code stream, looks up absolute target address from IRT[slot],
+  builds call frame with caller unit_id encoded in static_link high byte,
+  sets pc=target
+- Extended vm_state from 27 to 36 bytes (9→12 words): added irt_base,
+  unit_count, current_unit fields
+- Extended dispatch table from 116 to 117 entries (0x00-0x74)
+- Updated op_ret to detect cross-unit returns: checks static_link high
+  byte, restores current_unit on cross-unit return
+- Extended ret_temps from 12 to 15 bytes (added static_link save slot)
+- Added sys 7 (SET_IRT_BASE): pops address from eval stack, sets
+  vm_state.irt_base — enables p-code programs to configure the IRT
+- Added xcall_temps (6 bytes) for handler scratch storage
+- Fixed COR24 ISA issues: shr→sra, mov fp,r0→push r0;pop fp
+- Added sys_led trampoline (sys_led_j) for branch distance overflow
+- Added t16-xcall VM test: allocates IRT on heap, writes target offset,
+  sets irt_base via sys 7, xcalls through slot 0, verifies return
+- All 165 Rust tests + 18 VM tests pass
+
 ## 2026-04-05 -- P24 v2 binary format with export/import tables
 
 - Extended .p24 binary format to v2 with unit export and import tables

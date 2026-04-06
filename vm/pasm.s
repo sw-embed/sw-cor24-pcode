@@ -1388,7 +1388,7 @@ hi_p2_not_t4:
     jal r1, (r2)
     pop r0
     lc r2, 8
-    shr r0, r2               ; r0 >>= 8
+    sra r0, r2               ; r0 >>= 8
     la r2, emit_byte         ; emit high byte
     jal r1, (r2)
 

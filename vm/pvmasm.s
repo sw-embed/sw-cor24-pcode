@@ -1441,7 +1441,7 @@ hi_p2_not_t4:
     jal r1, (r2)
     pop r0
     lc r2, 8
-    shr r0, r2               ; r0 >>= 8
+    sra r0, r2               ; r0 >>= 8
     la r2, emit_byte         ; emit high byte
     jal r1, (r2)
 
@@ -2311,7 +2311,7 @@ vm_loop:
 
     ; Bounds check: opcode must be < 116 (0x00..0x73)
     mov r0, r2
-    lc r2, 116
+    lc r2, 117
     clu r0, r2
     brt opcode_ok
     la r0, op_invalid
@@ -3076,6 +3076,13 @@ ret_no_rv:
     sw r0, 9(r2)
     ; ret_temps[9] = has_rv = 0
 ret_restore:
+    ; Check for cross-unit return: read static_link from frame
+    ; static_link is at fp_vm - 6
+    lw r0, 9(fp)
+    lw r2, -6(r0)           ; r2 = static_link
+    ; Save it for post-restore check
+    la r0, ret_temps
+    sw r2, 12(r0)           ; ret_temps[12] = static_link
     ; Restore pc from frame header (fp_vm - 12)
     lw r0, 9(fp)
     lw r2, -12(r0)
@@ -3112,6 +3119,19 @@ ret_restore:
     add r0, 3
     sw r0, 3(fp)
 ret_done:
+    ; Check if this was a cross-unit return
+    ; static_link high byte nonzero => xcall frame
+    la r0, ret_temps
+    lw r0, 12(r0)           ; r0 = saved static_link
+    ; Extract high byte: shift right by 16
+    lc r2, 16
+    sra r0, r2              ; r0 = high byte of static_link
+    ceq r0, z
+    brt ret_no_xunit
+    ; Cross-unit return: restore current_unit = high_byte - 1
+    add r0, -1              ; r0 = caller's unit_id
+    sb r0, 33(fp)           ; current_unit = caller's unit_id
+ret_no_xunit:
     la r0, vm_loop
     jmp (r0)
 
@@ -4046,6 +4066,87 @@ op_jmp_ind:
     la r0, vm_loop
     jmp (r0)
 
+; 0x74 — xcall slot16: cross-unit procedure call via IRT
+; Reads 16-bit slot index from code, looks up absolute target address
+; from IRT[slot], builds call frame with caller unit_id in static_link
+; high byte, then jumps to target.
+; Encoding: [0x74, slot_lo, slot_hi] (3 bytes)
+op_xcall:
+    ; fp = &vm_state
+    ; 1. Fetch slot_lo from code[pc]
+    lw r0, 18(fp)           ; r0 = code base
+    lw r2, 0(fp)            ; r2 = pc
+    add r0, r2              ; r0 = &code[pc]
+    lbu r2, 0(r0)           ; r2 = slot_lo
+    push r2
+    lbu r2, 1(r0)           ; r2 = slot_hi
+    pop r0
+    ; Combine: slot = slot_lo | (slot_hi << 8)
+    push r0                  ; save slot_lo
+    lc r0, 8
+    shl r2, r0              ; r2 = slot_hi << 8
+    pop r0
+    or r0, r2               ; r0 = slot (16-bit)
+    push r0                  ; save slot
+
+    ; 2. Advance pc by 2 (skip slot operand)
+    lw r0, 0(fp)
+    add r0, 2
+    ; Save return_pc to xcall_temps
+    la r2, xcall_temps
+    sw r0, 0(r2)            ; xcall_temps[0] = return_pc
+
+    ; 3. Look up IRT: target = mem[irt_base + slot * 3]
+    pop r0                   ; r0 = slot
+    ; Compute slot * 3
+    mov r2, r0
+    add r0, r0
+    add r0, r2              ; r0 = slot * 3
+    ; Add irt_base
+    lw r2, 27(fp)           ; r2 = irt_base
+    add r0, r2              ; r0 = &IRT[slot]
+    ; Read target address from IRT
+    push fp
+    push r0
+    pop fp
+    lw r0, 0(fp)            ; r0 = target_pc (absolute)
+    pop fp
+    la r2, xcall_temps
+    sw r0, 3(r2)            ; xcall_temps[3] = target_pc
+
+    ; 4. Build call frame on call stack
+    lw r2, 6(fp)            ; r2 = csp
+    ; frame[0] = return_pc
+    la r0, xcall_temps
+    lw r0, 0(r0)
+    sw r0, 0(r2)
+    ; frame[3] = dynamic_link (current fp_vm)
+    lw r0, 9(fp)
+    sw r0, 3(r2)
+    ; frame[6] = static_link: encode caller unit_id in high byte
+    ; static_link = (current_unit + 1) << 16
+    ; The +1 ensures unit 0 also produces a nonzero high byte
+    lbu r0, 33(fp)          ; r0 = current_unit
+    add r0, 1               ; r0 = current_unit + 1
+    lc r1, 16
+    shl r0, r1              ; r0 = (current_unit + 1) << 16
+    sw r0, 6(r2)
+    ; frame[9] = saved_esp
+    lw r0, 3(fp)
+    sw r0, 9(r2)
+    ; Advance csp by 12
+    add r2, 12
+    sw r2, 6(fp)
+
+    ; 5. Set pc = target_pc
+    la r0, xcall_temps
+    lw r0, 3(r0)
+    sw r0, 0(fp)
+
+    ; 6. Jump to vm_loop
+    la r0, vm_loop
+    jmp (r0)
+
 ; Temporary storage for memcmp
 memcmp_a_tmp:
     .word 0
@@ -4106,7 +4207,7 @@ op_sys:
     ; id == 3 (LED)?
     lc r2, 3
     ceq r0, r2
-    brt sys_led
+    brt sys_led_j
     ; Reload sys id
     push fp
     la r0, sys_id_temp
@@ -4133,11 +4234,18 @@ op_sys:
     lc r2, 6
     ceq r0, r2
     brt sys_rdswitch_j
+    ; id == 7 (SET_IRT_BASE)?
+    lc r2, 7
+    ceq r0, r2
+    brt sys_set_irt_j
     ; Unknown sys id — trap
     la r0, op_invalid
     jmp (r0)
 
 ; Jump trampolines for far handlers
+sys_led_j:
+    la r0, sys_led
+    jmp (r0)
 sys_alloc_j:
     la r0, sys_alloc
     jmp (r0)
@@ -4146,6 +4254,9 @@ sys_free_j:
     jmp (r0)
 sys_rdswitch_j:
     la r0, sys_read_switch
+    jmp (r0)
+sys_set_irt_j:
+    la r0, sys_set_irt_base
     jmp (r0)
 
 ; sys HALT (id=0): stop VM execution
@@ -4216,6 +4327,21 @@ sys_led:
     xor r0, r2
     la r2, -65536
     sb r0, 0(r2)
+    la r0, vm_loop
+    jmp (r0)
+
+; sys READ_SWITCH (id=6): read switch state, push onto eval stack
+; sys SET_IRT_BASE (id=7): pop address, set vm_state.irt_base
+sys_set_irt_base:
+    la r0, vm_state
+    push r0
+    pop fp
+    ; Pop address from eval stack
+    lw r2, 3(fp)
+    add r2, -3
+    sw r2, 3(fp)           ; esp -= 3
+    lw r0, 0(r2)           ; r0 = address (TOS)
+    sw r0, 27(fp)          ; irt_base = address
     la r0, vm_loop
     jmp (r0)
 
@@ -4473,6 +4599,8 @@ dispatch_table:
     .word op_memcmp
     ; 0x73: Indirect jump
     .word op_jmp_ind
+    ; 0x74: Cross-unit call
+    .word op_xcall
 ; ============================================================
 ; Mnemonic table
 ; ============================================================
@@ -5556,7 +5684,7 @@ msg_trap_prefix:
     ; "TRAP \0" (space, no newline — code digit and \n printed separately)
 
 ; ============================================================
-; VM state struct (9 words = 27 bytes)
+; VM state struct (12 words = 36 bytes)
 ; ============================================================
 vm_state:
     .word 0
@@ -5577,9 +5705,15 @@ vm_state:
     ; status (offset 21)
     .word 0
     ; trap_code (offset 24)
+    .word 0
+    ; irt_base (offset 27) — base address of import resolution table
+    .word 0
+    ; unit_count (offset 30) — number of loaded units (low byte)
+    .word 0
+    ; current_unit (offset 33) — currently executing unit ID (low byte)
 
 ; ============================================================
-; Temporary storage for ret handler (4 words = 12 bytes)
+; Temporary storage for ret handler (5 words = 15 bytes)
 ; ============================================================
 ret_temps:
     .word 0
@@ -5590,6 +5724,8 @@ ret_temps:
     ; [6] retval
     .word 0
     ; [9] has_rv flag
+    .word 0
+    ; [12] static_link (for cross-unit return detection)
 
 ; ============================================================
 ; Temporary storage for sys dispatch (1 word = 3 bytes)
@@ -5607,6 +5743,13 @@ nonlocal_temps:
     ; [3] off (or static link for calln)
     .word 0
     ; [6] value (for storen)
+
+; Temporary storage for xcall handler (2 words = 6 bytes)
+xcall_temps:
+    .word 0
+    ; [0] return_pc
+    .word 0
+    ; [3] target_pc
 
 ; ============================================================
 ; VM memory segments
