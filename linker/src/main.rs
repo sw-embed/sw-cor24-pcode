@@ -10,12 +10,14 @@ struct Args {
     inputs: Vec<String>,
     output: Option<String>,
     verbose: bool,
+    unit_mode: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut inputs = Vec::new();
     let mut output = None;
     let mut verbose = false;
+    let mut unit_mode = false;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -31,6 +33,9 @@ fn parse_args() -> Result<Args, String> {
             }
             "--verbose" | "-v" => {
                 verbose = true;
+            }
+            "--unit" => {
+                unit_mode = true;
             }
             "--help" | "-h" => {
                 return Err(String::new()); // triggers usage
@@ -53,6 +58,7 @@ fn parse_args() -> Result<Args, String> {
         inputs,
         output,
         verbose,
+        unit_mode,
     })
 }
 
@@ -62,7 +68,8 @@ fn usage() {
     eprintln!("Usage: pl24r [OPTIONS] <file.spc>...");
     eprintln!();
     eprintln!("Options:");
-    eprintln!("  -o <path>    Write output to file (default: stdout)");
+    eprintln!("  -o <path>      Write output to file (default: stdout)");
+    eprintln!("  --unit         Unit mode: preserve .unit/.import/.export/.extern");
     eprintln!("  -v, --verbose  Print diagnostics to stderr");
     eprintln!("  -h, --help     Show this help");
 }
@@ -115,23 +122,43 @@ fn run() -> Result<(), String> {
     }
 
     // Link modules.
-    let linked = linker::link(&modules).map_err(|errors| {
-        let msgs: Vec<String> = errors.iter().map(|e| format!("error: {e}")).collect();
-        msgs.join("\n")
-    })?;
+    let output_text = if args.unit_mode {
+        let unit_linked = linker::link_unit(&modules, None).map_err(|errors| {
+            let msgs: Vec<String> = errors.iter().map(|e| format!("error: {e}")).collect();
+            msgs.join("\n")
+        })?;
 
-    if args.verbose {
-        eprintln!(
-            "[pl24r] linked: {} procs, {} globals, {} data, {} consts",
-            linked.procs.len(),
-            linked.globals.len(),
-            linked.data.len(),
-            linked.consts.len(),
-        );
-    }
+        if args.verbose {
+            eprintln!(
+                "[pl24r] unit '{}': {} procs, {} globals, {} exports, {} externs, {} imports",
+                unit_linked.unit_name,
+                unit_linked.linked.procs.len(),
+                unit_linked.linked.globals.len(),
+                unit_linked.exports.len(),
+                unit_linked.externs.len(),
+                unit_linked.imports.len(),
+            );
+        }
 
-    // Emit output.
-    let output_text = linker::emit(&linked);
+        linker::emit_unit(&unit_linked)
+    } else {
+        let linked = linker::link(&modules).map_err(|errors| {
+            let msgs: Vec<String> = errors.iter().map(|e| format!("error: {e}")).collect();
+            msgs.join("\n")
+        })?;
+
+        if args.verbose {
+            eprintln!(
+                "[pl24r] linked: {} procs, {} globals, {} data, {} consts",
+                linked.procs.len(),
+                linked.globals.len(),
+                linked.data.len(),
+                linked.consts.len(),
+            );
+        }
+
+        linker::emit(&linked)
+    };
 
     match args.output {
         Some(ref path) => {

@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-04-06 -- Linker --unit mode
+
+- Added --unit flag to pl24r for unit compilation mode
+- Unit mode preserves .unit/.import/.export/.extern directives in output
+  (static-link mode strips them as before)
+- Validates: every .export references a defined proc/global, every .extern
+  is either resolved internally (removed) or has a matching .import
+- Parser now handles .unit, .import, .endunit directives
+- .export/.extern accept optional nargs parameter (stripped by linker)
+- link_unit() and emit_unit() public API for programmatic use
+- 6 new tests: directive preservation, import/extern handling, internal
+  resolution, error cases, end-to-end assembly to v2 .p24
+- All 188 Rust tests pass
+
 ## 2026-04-06 -- VM .p24m multi-unit image support
 
 - pvm.s _start detects .p24m magic ("P24M") at code_ptr and parses the

@@ -1,6 +1,6 @@
 number = 8
 slug = "linker-unit-mode"
-status = "pending"
+status = "in-progress"
 description = "Add --unit flag to pl24r (linker). In unit mode: (1) merge input .spc modules..."
 role = "production"
 context_files = []

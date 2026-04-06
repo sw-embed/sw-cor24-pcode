@@ -13,8 +13,12 @@ pub struct Module {
     pub exports: Vec<String>,
     /// Symbols declared as external dependencies via `.extern`.
     pub externs: Vec<String>,
+    /// External unit names declared via `.import`.
+    pub imports: Vec<String>,
     /// Whether this module had explicit `.module`/`.endmodule` metadata.
     pub has_metadata: bool,
+    /// Whether this module uses `.unit` (unit mode) instead of `.module`.
+    pub is_unit: bool,
     /// The items (procs, globals, data, constants, comments) in order.
     pub items: Vec<Item>,
 }
@@ -117,8 +121,10 @@ impl<'a> Parser<'a> {
         let mut module_name: Option<String> = None;
         let mut exports = Vec::new();
         let mut externs = Vec::new();
+        let mut imports = Vec::new();
         let mut items = Vec::new();
         let mut has_metadata = false;
+        let mut is_unit = false;
         let mut in_module = false;
 
         while self.pos < self.lines.len() {
@@ -143,6 +149,27 @@ impl<'a> Parser<'a> {
                 let dir_arg = parts.get(1).map(|s| s.trim());
 
                 match dir_name {
+                    "unit" => {
+                        let name = dir_arg.ok_or_else(|| ParseError {
+                            line: line_num,
+                            message: ".unit requires a name".to_string(),
+                        })?;
+                        let name = name.split(';').next().unwrap().trim();
+                        module_name = Some(name.to_string());
+                        has_metadata = true;
+                        is_unit = true;
+                        in_module = true;
+                        self.pos += 1;
+                    }
+                    "import" => {
+                        let name = dir_arg.ok_or_else(|| ParseError {
+                            line: line_num,
+                            message: ".import requires a unit name".to_string(),
+                        })?;
+                        let name = name.split(';').next().unwrap().trim();
+                        imports.push(name.to_string());
+                        self.pos += 1;
+                    }
                     "module" => {
                         let name = dir_arg.ok_or_else(|| ParseError {
                             line: line_num,
@@ -155,11 +182,11 @@ impl<'a> Parser<'a> {
                         in_module = true;
                         self.pos += 1;
                     }
-                    "endmodule" => {
+                    "endmodule" | "endunit" => {
                         if !in_module {
                             return Err(ParseError {
                                 line: line_num,
-                                message: ".endmodule without matching .module".to_string(),
+                                message: format!(".{dir_name} without matching .module/.unit"),
                             });
                         }
                         in_module = false;
@@ -171,6 +198,8 @@ impl<'a> Parser<'a> {
                             message: ".export requires a symbol name".to_string(),
                         })?;
                         let sym = sym.split(';').next().unwrap().trim();
+                        // Take only the symbol name (strip optional nargs)
+                        let sym = sym.split_whitespace().next().unwrap_or(sym);
                         exports.push(sym.to_string());
                         self.pos += 1;
                     }
@@ -180,6 +209,8 @@ impl<'a> Parser<'a> {
                             message: ".extern requires a symbol name".to_string(),
                         })?;
                         let sym = sym.split(';').next().unwrap().trim();
+                        // Take only the symbol name (strip optional nargs)
+                        let sym = sym.split_whitespace().next().unwrap_or(sym);
                         externs.push(sym.to_string());
                         self.pos += 1;
                     }
@@ -226,7 +257,9 @@ impl<'a> Parser<'a> {
             name,
             exports,
             externs,
+            imports,
             has_metadata,
+            is_unit,
             items,
         })
     }

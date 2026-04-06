@@ -196,6 +196,212 @@ pub fn emit(output: &LinkedOutput) -> String {
     lines.join("\n")
 }
 
+/// The merged output of linking modules in unit mode.
+/// Preserves .unit/.import/.export/.extern directives for the assembler.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnitLinkedOutput {
+    /// Unit name (from first module with .unit, or derived from main module).
+    pub unit_name: String,
+    /// Imported unit names.
+    pub imports: Vec<String>,
+    /// Exported symbol names.
+    pub exports: Vec<String>,
+    /// External symbol names (unresolved — require .import).
+    pub externs: Vec<String>,
+    /// The merged linked output (same structure as static link).
+    pub linked: LinkedOutput,
+}
+
+/// Link multiple modules in unit mode.
+///
+/// Like `link()`, but validates that:
+/// - Every .export references a defined proc or global
+/// - Every .extern is either defined internally (resolved, removed from externs)
+///   or has a matching .import (left as .extern for the assembler)
+/// - No .extern without .import
+pub fn link_unit(
+    modules: &[Module],
+    unit_name: Option<&str>,
+) -> Result<UnitLinkedOutput, Vec<LinkError>> {
+    // First do the normal link (merges, orders main first).
+    let linked = link(modules)?;
+
+    // Collect all defined proc and global names.
+    let mut defined: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for p in &linked.procs {
+        defined.insert(p.name.clone());
+    }
+    for g in &linked.globals {
+        defined.insert(g.name.clone());
+    }
+
+    // Merge exports from all modules.
+    let mut exports: Vec<String> = Vec::new();
+    for m in modules {
+        for e in &m.exports {
+            if !exports.contains(e) {
+                exports.push(e.clone());
+            }
+        }
+    }
+
+    // Merge imports from all modules.
+    let mut imports: Vec<String> = Vec::new();
+    for m in modules {
+        for i in &m.imports {
+            if !imports.contains(i) {
+                imports.push(i.clone());
+            }
+        }
+    }
+
+    // Validate exports.
+    let mut errors = Vec::new();
+    for e in &exports {
+        if !defined.contains(e) {
+            errors.push(LinkError {
+                message: format!(".export '{e}' not defined in any module"),
+            });
+        }
+    }
+
+    // Process externs: resolve internally or validate .import exists.
+    let mut unresolved_externs: Vec<String> = Vec::new();
+    for m in modules {
+        for ext in &m.externs {
+            if defined.contains(ext) {
+                // Resolved internally — no extern needed.
+                continue;
+            }
+            if imports.is_empty() {
+                errors.push(LinkError {
+                    message: format!(".extern '{ext}' not defined and no .import declared"),
+                });
+            } else if !unresolved_externs.contains(ext) {
+                unresolved_externs.push(ext.clone());
+            }
+        }
+    }
+
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    // Determine unit name.
+    let name = if let Some(n) = unit_name {
+        n.to_string()
+    } else {
+        modules
+            .iter()
+            .find(|m| m.is_unit)
+            .map(|m| m.name.clone())
+            .unwrap_or_else(|| {
+                modules
+                    .iter()
+                    .find(|m| {
+                        m.items
+                            .iter()
+                            .any(|i| matches!(i, Item::Proc(p) if p.name == "main"))
+                    })
+                    .map(|m| m.name.clone())
+                    .unwrap_or_else(|| "unit".to_string())
+            })
+    };
+
+    Ok(UnitLinkedOutput {
+        unit_name: name,
+        imports,
+        exports,
+        externs: unresolved_externs,
+        linked,
+    })
+}
+
+/// Emit unit-linked output as .spc text with .unit/.import/.export/.extern preserved.
+pub fn emit_unit(output: &UnitLinkedOutput) -> String {
+    let mut lines = Vec::new();
+
+    // Unit directive.
+    lines.push(format!(".unit {}", output.unit_name));
+    lines.push(String::new());
+
+    // Imports.
+    for imp in &output.imports {
+        lines.push(format!(".import {imp}"));
+    }
+
+    // Exports.
+    for exp in &output.exports {
+        lines.push(format!(".export {exp}"));
+    }
+
+    // Externs (unresolved — need xcall).
+    for ext in &output.externs {
+        lines.push(format!(".extern {ext}"));
+    }
+
+    if !output.imports.is_empty() || !output.exports.is_empty() || !output.externs.is_empty() {
+        lines.push(String::new());
+    }
+
+    // The rest is the same as emit() but without comments header.
+    let linked = &output.linked;
+
+    // Globals section.
+    for g in &linked.globals {
+        lines.push(format!(".global {} {}", g.name, g.nwords));
+    }
+    if !linked.globals.is_empty() {
+        lines.push(String::new());
+    }
+
+    // Data section.
+    for d in &linked.data {
+        let bytes_str: Vec<String> = d.bytes.iter().map(|b| b.to_string()).collect();
+        lines.push(format!(".data {} {}", d.name, bytes_str.join(",")));
+    }
+    if !linked.data.is_empty() {
+        lines.push(String::new());
+    }
+
+    // Constants section.
+    for c in &linked.consts {
+        lines.push(format!(".const {} {}", c.name, c.value));
+    }
+    if !linked.consts.is_empty() {
+        lines.push(String::new());
+    }
+
+    // Procedures.
+    for p in &linked.procs {
+        lines.push(format!(".proc {} {}", p.name, p.nlocals));
+        for stmt in &p.body {
+            match stmt {
+                Statement::Label(l) => lines.push(format!("{l}:")),
+                Statement::Instruction(i) => {
+                    let mut s = format!("    {}", i.mnemonic);
+                    if let Some(op) = &i.operand {
+                        s.push(' ');
+                        s.push_str(op);
+                    }
+                    if let Some(c) = &i.comment {
+                        let pad = if s.len() < 24 { 24 - s.len() } else { 1 };
+                        s.push_str(&" ".repeat(pad));
+                        s.push_str(c);
+                    }
+                    lines.push(s);
+                }
+                Statement::Comment(c) => lines.push(format!("    {c}")),
+                Statement::Blank => lines.push(String::new()),
+            }
+        }
+        lines.push(".end".to_string());
+        lines.push(String::new());
+    }
+
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -721,5 +927,202 @@ done:
                 .count(),
             4
         );
+    }
+
+    // ── Unit mode tests ──
+
+    #[test]
+    fn test_link_unit_preserves_directives() {
+        let gcd_mod = parse_ok(
+            "\
+.unit mathlib
+.export gcd 2
+
+.proc main 0
+    halt
+.end
+
+.proc gcd 2
+    loada 1
+    jz gcd_base
+    loada 0
+    loada 1
+    mod
+    loada 1
+    call gcd
+    ret 2
+gcd_base:
+    loada 0
+    ret 2
+.end
+
+.endunit
+",
+            "gcd.spc",
+        );
+
+        let result = link_unit(&[gcd_mod], None).unwrap();
+        assert_eq!(result.unit_name, "mathlib");
+        assert_eq!(result.exports, vec!["gcd"]);
+        assert!(result.externs.is_empty());
+        assert!(result.imports.is_empty());
+
+        let output = emit_unit(&result);
+        assert!(output.contains(".unit mathlib"));
+        assert!(output.contains(".export gcd"));
+        assert!(output.contains(".proc main"));
+        assert!(output.contains(".proc gcd"));
+    }
+
+    #[test]
+    fn test_link_unit_with_imports() {
+        let app = parse_ok(
+            "\
+.unit app
+.import mathlib
+.extern gcd 2
+
+.proc main 0
+    push_s 12
+    push_s 8
+    xcall gcd
+    halt
+.end
+
+.endunit
+",
+            "app.spc",
+        );
+
+        let result = link_unit(&[app], None).unwrap();
+        assert_eq!(result.unit_name, "app");
+        assert_eq!(result.imports, vec!["mathlib"]);
+        assert_eq!(result.externs, vec!["gcd"]);
+        assert!(result.exports.is_empty());
+
+        let output = emit_unit(&result);
+        assert!(output.contains(".unit app"));
+        assert!(output.contains(".import mathlib"));
+        assert!(output.contains(".extern gcd"));
+    }
+
+    #[test]
+    fn test_link_unit_resolves_internal_extern() {
+        // Two modules: app uses .extern helper, but helper is defined in lib.
+        // In unit mode, helper resolves internally and should NOT appear as .extern.
+        let app = parse_ok(
+            "\
+.module app
+.export main
+.extern helper
+
+.proc main 0
+    call helper
+    halt
+.end
+
+.endmodule
+",
+            "app.spc",
+        );
+
+        let lib = parse_ok(
+            "\
+.module lib
+.export helper
+
+.proc helper 0
+    push_s 42
+    sys 1
+    ret 0
+.end
+
+.endmodule
+",
+            "lib.spc",
+        );
+
+        let result = link_unit(&[app, lib], Some("myunit")).unwrap();
+        assert_eq!(result.unit_name, "myunit");
+        // helper resolved internally — no unresolved externs
+        assert!(result.externs.is_empty());
+    }
+
+    #[test]
+    fn test_link_unit_error_undefined_export() {
+        let m = parse_ok(
+            "\
+.unit bad
+.export nonexistent
+
+.proc main 0
+    halt
+.end
+
+.endunit
+",
+            "bad.spc",
+        );
+
+        let err = link_unit(&[m], None).unwrap_err();
+        assert!(err[0].message.contains("not defined"));
+    }
+
+    #[test]
+    fn test_link_unit_error_extern_without_import() {
+        let m = parse_ok(
+            "\
+.unit bad
+.extern missing_fn
+
+.proc main 0
+    xcall missing_fn
+    halt
+.end
+
+.endunit
+",
+            "bad.spc",
+        );
+
+        let err = link_unit(&[m], None).unwrap_err();
+        assert!(err[0].message.contains("no .import"));
+    }
+
+    #[test]
+    fn test_link_unit_output_assembles() {
+        // Verify unit-linked output can be assembled by pa24r
+        let m = parse_ok(
+            "\
+.unit mathlib
+.export double 1
+
+.proc main 0
+    halt
+.end
+
+.proc double 1
+    loada 0
+    dup
+    add
+    ret 1
+.end
+
+.endunit
+",
+            "mathlib.spc",
+        );
+
+        let result = link_unit(&[m], None).unwrap();
+        let output = emit_unit(&result);
+
+        // Verify it assembles to a v2 .p24
+        let binary = pa24r::assemble_to_p24(&output).expect("should assemble");
+        assert_eq!(binary[4], pa24r::P24_VERSION_2);
+        let loaded = pa24r::load_p24(&binary).unwrap();
+        let info = loaded.unit_info.as_ref().expect("should have unit_info");
+        assert_eq!(info.name, "mathlib");
+        assert_eq!(info.exports.len(), 1);
+        assert_eq!(info.exports[0].name, "double");
     }
 }

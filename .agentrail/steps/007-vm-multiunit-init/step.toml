@@ -1,8 +1,9 @@
 number = 7
 slug = "vm-multiunit-init"
-status = "in-progress"
+status = "completed"
 description = "Update the P-code VM (pvm.s and pvmasm.s) to support loading and running .p24..."
 role = "production"
 context_files = []
 created_at = "2026-04-05T18:44:39"
+completed_at = "2026-04-06T10:16:34"
 task_type = "vm"
