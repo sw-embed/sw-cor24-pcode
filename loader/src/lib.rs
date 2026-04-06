@@ -406,6 +406,7 @@ mod tests {
     use pa24r::{assemble, assemble_to_p24};
 
     fn make_lib_unit() -> Vec<u8> {
+        // main does not have to be first — placed first here for simplicity.
         let source = "\
 .unit mathlib
 .export double 1

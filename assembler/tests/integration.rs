@@ -446,6 +446,8 @@ fn assembler_mnemonic_tables_in_sync() {
 
 #[test]
 fn unit_mode_collects_exports() {
+    // main does not have to be first — but we put it first here for simplicity.
+    // See main_not_first_is_ok for the general case.
     let source = "\
 .unit mathlib
 .export add_nums 2
@@ -467,7 +469,8 @@ fn unit_mode_collects_exports() {
     assert_eq!(info.name, "mathlib");
     assert_eq!(info.exports.len(), 1);
     assert_eq!(info.exports[0].name, "add_nums");
-    // main is first (4 bytes: enter+halt+leave), add_nums starts at offset 4
+    // main happens to be first here (4 bytes: enter+halt+leave), so
+    // add_nums starts at offset 4. main does not have to be first.
     assert_eq!(info.exports[0].offset, 4);
 }
 
@@ -534,6 +537,7 @@ fn unit_mode_xcall_encoding() {
 
 #[test]
 fn v2_binary_round_trip() {
+    // main does not have to be first — but we put it first here for simplicity.
     let source = "\
 .unit mathlib
 .export double 1

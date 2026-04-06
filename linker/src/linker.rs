@@ -1091,7 +1091,8 @@ gcd_base:
 
     #[test]
     fn test_link_unit_output_assembles() {
-        // Verify unit-linked output can be assembled by pa24r
+        // Verify unit-linked output can be assembled by pa24r.
+        // main does not have to be first — placed first here for simplicity.
         let m = parse_ok(
             "\
 .unit mathlib
