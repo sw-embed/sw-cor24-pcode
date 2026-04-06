@@ -176,9 +176,12 @@ fn error_missing_main() {
 }
 
 #[test]
-fn error_main_not_first() {
+fn main_not_first_is_ok() {
+    // Compilers like p24p emit a prologue proc at offset 0 that calls main.
+    // main can be at any offset — its position is recorded in entry_point.
     let source = "\
-.proc helper 0
+.proc _entry 0
+    call main
     halt
 .end
 .proc main 0
@@ -186,12 +189,10 @@ fn error_main_not_first() {
 .end
 ";
     let result = assemble(source);
-    assert!(
-        result
-            .errors
-            .iter()
-            .any(|e| e.message.contains("must be the first procedure"))
-    );
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    // _entry: enter(2) + call(4) + halt(1) + leave(1) = 8 bytes
+    // main starts at offset 8
+    assert_eq!(result.entry_point, 8);
 }
 
 #[test]

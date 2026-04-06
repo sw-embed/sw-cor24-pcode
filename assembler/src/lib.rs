@@ -641,18 +641,10 @@ pub fn assemble(source: &str) -> AssemblyResult {
             line: 0,
             message: "missing .proc main".into(),
         });
-    } else if entry_point != Some(0) && unit_name.is_none() {
-        // In unit mode (.unit), main can be at any offset — the entry point
-        // is stored in the v2 header. Only enforce offset 0 for standalone
-        // programs (.module) where the VM starts execution at PC=0.
-        errors.push(AssemblyError {
-            line: 0,
-            message: format!(
-                ".proc main must be the first procedure (at offset 0), but found at offset {}",
-                entry_point.unwrap()
-            ),
-        });
     }
+    // Note: main does NOT need to be at offset 0. Compilers like p24p emit
+    // a prologue proc (_p24p_entry) at offset 0 that calls main. The .p24
+    // header records main's offset in the entry_point field for loaders.
 
     // ── Pass 2: Code Emission ──
 
