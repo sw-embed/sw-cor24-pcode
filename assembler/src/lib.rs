@@ -641,7 +641,10 @@ pub fn assemble(source: &str) -> AssemblyResult {
             line: 0,
             message: "missing .proc main".into(),
         });
-    } else if entry_point != Some(0) {
+    } else if entry_point != Some(0) && unit_name.is_none() {
+        // In unit mode (.unit), main can be at any offset — the entry point
+        // is stored in the v2 header. Only enforce offset 0 for standalone
+        // programs (.module) where the VM starts execution at PC=0.
         errors.push(AssemblyError {
             line: 0,
             message: format!(
