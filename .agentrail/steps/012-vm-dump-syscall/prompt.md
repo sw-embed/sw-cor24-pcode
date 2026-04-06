@@ -1,0 +1,1 @@
+Add sys 8 (DUMP_STATE) to pvm.s and pvmasm.s. Prints vm_state fields to UART in a human-readable format: pc, esp, csp, fp_vm, gp, hp, code, status, trap_code, irt_base, unit_count, current_unit, unit_table_ptr, p24m_base. Format: 'VM: pc=NNNNNN esp=NNNNNN csp=NNNNNN ...' on one or two lines. Useful for debugging p-code programs at runtime. Add to tracer as well.

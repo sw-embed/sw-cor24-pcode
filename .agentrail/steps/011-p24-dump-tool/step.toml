@@ -1,0 +1,8 @@
+number = 11
+slug = "p24-dump-tool"
+status = "in-progress"
+description = "Create a p24-dump Rust CLI tool that pretty-prints .p24 and .p24m file layout..."
+role = "production"
+context_files = []
+created_at = "2026-04-06T12:19:01"
+task_type = "tooling"
