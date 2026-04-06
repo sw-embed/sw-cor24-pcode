@@ -1,6 +1,6 @@
 number = 10
 slug = "unit-integration-tests"
-status = "pending"
+status = "in-progress"
 description = "Add end-to-end integration tests for the multi-unit loading system. Create te..."
 role = "production"
 context_files = []

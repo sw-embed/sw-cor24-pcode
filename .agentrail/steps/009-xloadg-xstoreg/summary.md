@@ -1,0 +1,1 @@
+Added XLOADG (0x75) and XSTOREG (0x76) to all implementations: pa24r opcode enum with D8O8 encoding, pasm.s/pvmasm.s mnemonic tables, pvm.s/pvmasm.s dispatch tables (119 entries) and handlers (unit_table lookup, global_base + offset addressing), pv24t tracer decode+trap. Handlers compute gp + (unit_table[unit_id].global_base + offset) * 3 for cross-unit global access.

@@ -197,9 +197,12 @@ pub fn link_units(binaries: &[(&str, &[u8])]) -> Result<Vec<u8>, LoaderError> {
         });
     }
 
-    // 7. Patch LOADG/STOREG/ADDRG operands with global partition offsets
+    // 7. Patch code: relocate control flow and global operands
     let mut patched_code: Vec<Vec<u8>> = units.iter().map(|u| u.image.code.clone()).collect();
     for unit in &units {
+        if unit.code_base > 0 {
+            patch_code_relocations(&mut patched_code[unit.id], unit.code_base);
+        }
         if unit.global_base > 0 {
             patch_global_operands(&mut patched_code[unit.id], unit.global_base);
         }
@@ -271,6 +274,65 @@ pub fn link_units(binaries: &[(&str, &[u8])]) -> Result<Vec<u8>, LoaderError> {
     let _ = total_data;
 
     Ok(image)
+}
+
+/// Relocate intra-unit control flow operands by adding the unit's code_base.
+///
+/// When multiple units are concatenated, each unit's internal call/jmp/jz/jnz
+/// targets (which are code offsets relative to the unit's start) need to be
+/// adjusted to absolute offsets in the combined code segment.
+/// Also patches push operands that reference data (data refs are >= code_size
+/// within the unit, but in the combined image they need the code_base added).
+fn patch_code_relocations(code: &mut [u8], code_base: u32) {
+    let mut pc = 0;
+    while pc < code.len() {
+        let op = code[pc];
+        let size = pa24r::opcode_size(op);
+        match op {
+            // IMM24 control flow: jmp=0x30, jz=0x31, jnz=0x32, call=0x33
+            0x30..=0x33 if pc + 3 < code.len() => {
+                let val = read_le24(&code[pc + 1..pc + 4]);
+                let patched = val + code_base;
+                code[pc + 1] = patched as u8;
+                code[pc + 2] = (patched >> 8) as u8;
+                code[pc + 3] = (patched >> 16) as u8;
+            }
+            // D8_A24: calln=0x35 — addr24 is at offset 2 (after depth byte)
+            0x35 if pc + 4 < code.len() => {
+                let val = read_le24(&code[pc + 2..pc + 5]);
+                let patched = val + code_base;
+                code[pc + 2] = patched as u8;
+                code[pc + 3] = (patched >> 8) as u8;
+                code[pc + 4] = (patched >> 16) as u8;
+            }
+            // push=0x01 — relocate data/global refs (values that were
+            // originally code-relative). All push operands in non-zero units
+            // need code_base added since the assembler computes them relative
+            // to the unit's own code segment start.
+            0x01 if pc + 3 < code.len() => {
+                let val = read_le24(&code[pc + 1..pc + 4]);
+                // Only relocate non-zero push operands that look like
+                // code-relative addresses (data refs, global refs).
+                // Small constants (< unit's code size) could be code labels
+                // or literal values. We relocate ALL push operands for units
+                // at non-zero base — the assembler resolves data/global refs
+                // as offsets from code start, and those need relocation.
+                // Literal integer constants (e.g., push 42) would be wrong
+                // to relocate. We distinguish by checking if the value is
+                // >= the unit's code length (data/global refs are always
+                // >= code_size after assembly).
+                // For safety: only relocate values >= code.len() (data refs).
+                if val >= code.len() as u32 {
+                    let patched = val + code_base;
+                    code[pc + 1] = patched as u8;
+                    code[pc + 2] = (patched >> 8) as u8;
+                    code[pc + 3] = (patched >> 16) as u8;
+                }
+            }
+            _ => {}
+        }
+        pc += size;
+    }
 }
 
 /// Patch LOADG/STOREG/ADDRG 24-bit operands by adding a global word offset.

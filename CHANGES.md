@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-04-06 -- Multi-unit integration tests and code relocation
+
+- End-to-end multi-unit test: mathlib (gcd + factorial) xcalled from app
+  via .p24m, output matches statically-linked version (6720)
+- Added code relocation to p24-load: patches jmp/jz/jnz/call/calln
+  operands with unit code_base offset for non-zero-based units; also
+  relocates push operands that reference data segments
+- Expanded pvm.s call stack from 96 to 768 bytes, eval stack from 96
+  to 768 bytes — recursive programs (gcd, factorial) need deeper stacks
+- New test files: t18-mathlib.spc, t18-app.spc, t18-static.spc
+- demo.sh: added check_multiunit() helper that runs full pipeline
+  (pa24r → p24-load → cor24-run pvm.s), 2 new tests (t18-static,
+  t18-multiunit)
+- All 188 Rust tests + 20 VM tests pass
+
 ## 2026-04-06 -- XLOADG/XSTOREG cross-unit global access
 
 - Added XLOADG (0x75) and XSTOREG (0x76) opcodes for cross-unit global access

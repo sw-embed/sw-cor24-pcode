@@ -25,6 +25,67 @@ else
     GREEN='' RED='' YELLOW='' BOLD='' NC=''
 fi
 
+# Paths to toolchain binaries (built by cargo)
+PA24R="../target/debug/pa24r"
+P24LOAD="../target/debug/p24-load"
+
+# check_multiunit NAME APP_SPC LIB_SPC EXPECTED
+# Full multi-unit pipeline: assemble units → link → load .p24m on pvm.s
+check_multiunit() {
+    local name="$1" app_file="$2" lib_file="$3" expected="$4"
+
+    if [ ! -f "$app_file" ] || [ ! -f "$lib_file" ]; then
+        printf "  ${YELLOW}SKIP${NC}  %-20s  (file not found)\n" "$name"
+        SKIP=$((SKIP + 1))
+        return
+    fi
+
+    if [ ! -x "$PA24R" ] || [ ! -x "$P24LOAD" ]; then
+        printf "  ${YELLOW}SKIP${NC}  %-20s  (cargo build needed)\n" "$name"
+        SKIP=$((SKIP + 1))
+        return
+    fi
+
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap "rm -rf $tmpdir" RETURN
+
+    # Assemble each unit
+    "$PA24R" "$app_file" -o "$tmpdir/app.p24" 2>/dev/null || { printf "  ${RED}FAIL${NC}  %-20s  (pa24r app failed)\n" "$name"; FAIL=$((FAIL+1)); return; }
+    "$PA24R" "$lib_file" -o "$tmpdir/lib.p24" 2>/dev/null || { printf "  ${RED}FAIL${NC}  %-20s  (pa24r lib failed)\n" "$name"; FAIL=$((FAIL+1)); return; }
+
+    # Link
+    "$P24LOAD" "$tmpdir/app.p24" "$tmpdir/lib.p24" -o "$tmpdir/image.p24m" 2>/dev/null || { printf "  ${RED}FAIL${NC}  %-20s  (p24-load failed)\n" "$name"; FAIL=$((FAIL+1)); return; }
+
+    # Assemble pvm.s and find code_ptr
+    cor24-run --assemble pvm.s "$tmpdir/pvm.bin" "$tmpdir/pvm.lst" >/dev/null 2>&1
+    local code_ptr
+    code_ptr=$(grep -A1 "code_ptr:" "$tmpdir/pvm.lst" | tail -1 | awk '{print $1}' | tr -d ':')
+
+    # Run
+    local raw
+    raw=$(cor24-run --load-binary "$tmpdir/pvm.bin@0" --load-binary "$tmpdir/image.p24m@0x010000" --patch "0x${code_ptr}=0x010000" --entry 0 --speed 0 -n "$MAX_INSN" --terminal 2>&1)
+
+    # Extract: everything between "PVM OK" and "HALT"
+    local actual
+    actual=$(echo "$raw" | awk '
+        /^PVM OK$/ { found=1; next }
+        /^HALT$/ { found=0; next }
+        /^TRAP [0-9]/ && found { print; found=0; next }
+        found { print }
+    ')
+
+    if [ "$actual" = "$expected" ]; then
+        printf "  ${GREEN}PASS${NC}  %-20s\n" "$name"
+        PASS=$((PASS + 1))
+    else
+        printf "  ${RED}FAIL${NC}  %-20s\n" "$name"
+        printf "        expected: %s\n" "$(echo "$expected" | cat -v)"
+        printf "        actual:   %s\n" "$(echo "$actual" | cat -v)"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
 # run_spc FILE — assemble and run an .spc file, return UART output
 run_spc() {
     local file="$1"
@@ -123,6 +184,11 @@ run_tests() {
     echo "${BOLD}Linked programs:${NC}"
     check "merged-int"   "tests/merged_int.spc"   "42"
     check "merged-str"   "tests/merged_str.spc"   "Hello"
+
+    echo ""
+    echo "${BOLD}Multi-unit (.p24m):${NC}"
+    check "t18-static"   "tests/t18-static.spc"   "6720"
+    check_multiunit "t18-multiunit" "tests/t18-app.spc" "tests/t18-mathlib.spc" "6720"
 
     echo ""
     echo "────────────────────────────"
