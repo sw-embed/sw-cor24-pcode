@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-04-06 -- P24 multi-unit loader (p24-load)
+
+- New Rust binary crate loader/ (p24-load) in workspace
+- Reads multiple v2 .p24 files, resolves cross-unit imports against
+  exports, produces a .p24m multi-unit image
+- Features: sequential code layout, global segment partitioning,
+  import resolution via name matching, IRT construction, LOADG/STOREG/
+  ADDRG operand patching with global partition offsets
+- .p24m format: magic "P24M", unit table (base_addr + global_base),
+  per-unit IRT (import_count + absolute addresses), concatenated
+  code/data/globals
+- parse_p24m() for loading and verifying .p24m images
+- Error handling: unresolved imports, duplicate unit names, hash
+  collisions, address overflow
+- Added Debug derive to pa24r::LoadedImage
+- 10 loader tests: two-unit linking, IRT resolution, global patching,
+  entry point, error cases, round-trip, v1 compatibility
+- All 176 Rust tests pass
+
 ## 2026-04-06 -- XCALL VM handler and IRT dispatch
 
 - Added op_xcall handler to pvm.s and pvmasm.s: reads 16-bit IRT slot

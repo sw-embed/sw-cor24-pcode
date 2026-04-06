@@ -1,0 +1,1 @@
+Added op_xcall handler to pvm.s/pvmasm.s with IRT dispatch. Extended vm_state (27→36 bytes) with irt_base, unit_count, current_unit. Updated op_ret for cross-unit return detection via static_link high byte. Added sys 7 (SET_IRT_BASE). Added t16-xcall VM test. Fixed COR24 ISA issues (shr→sra, mov fp). All 165 Rust + 18 VM tests pass.

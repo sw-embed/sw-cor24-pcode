@@ -1,0 +1,7 @@
+[package]
+name = "p24-load"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+pa24r = { path = "../assembler" }

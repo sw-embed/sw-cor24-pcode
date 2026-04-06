@@ -1,0 +1,11 @@
+{
+  "task_type": "vm",
+  "state": {
+    "number": 5,
+    "step": "xcall-opcode"
+  },
+  "action": "Read pvm.s call/ret handlers, designed IRT lookup, implemented op_xcall in COR24 assembly, debugged branch distance and ISA issues, created VM integration test with manual IRT setup",
+  "result": "success",
+  "reward": 1,
+  "timestamp": "2026-04-06T09:50:37"
+}

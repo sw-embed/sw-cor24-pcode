@@ -1,6 +1,6 @@
 number = 6
 slug = "p24-loader"
-status = "pending"
+status = "in-progress"
 description = "Create a new Rust binary crate loader/ in the workspace. The loader (p24-load..."
 role = "production"
 context_files = []
