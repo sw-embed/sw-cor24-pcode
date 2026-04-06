@@ -968,10 +968,7 @@ impl Vm {
                     "VM: pc={:06X} esp={:06X} csp={:06X} fp={:06X}",
                     self.pc, self.esp, self.csp, self.fp_vm
                 );
-                eprintln!(
-                    "    gp={:06X} hp={:06X} code={:06X}",
-                    self.gp, self.hp, 0
-                );
+                eprintln!("    gp={:06X} hp={:06X} code={:06X}", self.gp, self.hp, 0);
             }
             _ => {
                 eprintln!("pv24t: unknown sys call {id}");

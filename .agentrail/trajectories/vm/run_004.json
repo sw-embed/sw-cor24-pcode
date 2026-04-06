@@ -1,0 +1,11 @@
+{
+  "task_type": "vm",
+  "state": {
+    "number": 12,
+    "step": "vm-dump-syscall"
+  },
+  "action": "Wrote COR24 hex printing helpers (nybble→byte→24-bit), sys dispatch+handler+string constants in pvm.s+pvmasm.s, tracer sys 7/8, fixed ISA and branch distance issues",
+  "result": "success",
+  "reward": 1,
+  "timestamp": "2026-04-06T12:50:45"
+}

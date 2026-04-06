@@ -228,8 +228,8 @@ init_p24m:
     lw r0, 0(r0)
     sw r0, 0(fp)             ; vm_state.pc = entry_point
 
-    ; Enter VM main loop
-    la r0, vm_loop
+    ; Check boot flags
+    la r0, init_done
     jmp (r0)
 
 init_raw_code:
@@ -307,7 +307,7 @@ init_raw_code:
     ; gp stays as globals_seg (set during init above)
 
     pop r0                   ; clean stack
-    la r0, vm_loop
+    la r0, init_done
     jmp (r0)
 
 init_raw_bytecode:
@@ -316,7 +316,29 @@ init_raw_bytecode:
     sw r0, 18(fp)            ; vm_state.code = load_addr
     ; pc already 0, gp already set to globals_seg
 
-    ; Enter VM main loop
+    ; Fall through to init_done
+
+; ── Check boot flags and optionally print memory map ──
+init_done:
+    la r0, vm_state
+    push r0
+    pop fp
+    ; Read vm_flags
+    la r0, vm_flags
+    lbu r0, 0(r0)
+    ; Bit 0 = verbose boot?
+    lc r2, 1
+    and r0, r2
+    ceq r0, z
+    brt init_run             ; not set → skip verbose
+    ; ── Verbose boot: print memory map ──
+    ; Use sys_dump_state to print vm_state (reuses the existing handler)
+    la r0, sys_dump_state
+    jmp (r0)
+    ; Note: sys_dump_state jumps to vm_loop when done, which is correct —
+    ; it prints the state and then starts execution.
+
+init_run:
     la r0, vm_loop
     jmp (r0)
 
@@ -3127,6 +3149,14 @@ vm_state:
 ; using --load-binary or --patch before execution starts.
 code_ptr:
     .word code_seg
+
+; vm_flags — patchable flags byte controlling VM behavior.
+; Set via: --patch <addr_of_vm_flags>=<value>
+; Bit 0: verbose boot — print memory map after .p24m/.p24 loading
+; Bit 1: (reserved for trace mode — not yet implemented)
+; Default: 0 (no flags set)
+vm_flags:
+    .byte 0
 
 ;   DIV_ZERO:       push_s 1, push_s 0, div  → TRAP 1
 ;   STACK_OVERFLOW: (fill stack past limit)   → TRAP 2

@@ -1,0 +1,1 @@
+Added sys 8 (DUMP_STATE) to pvm.s, pvmasm.s, and tracer. Prints vm_state fields as labeled hex values: pc, esp, csp, fp, gp, hp, code, irt, u (current_unit). Added uart_put_hex24/hex8/nybble COR24 helpers for hex output. Fixed lc→lcu for unsigned byte constants, added sys_getc trampolines. Also added sys 7+8 to tracer.

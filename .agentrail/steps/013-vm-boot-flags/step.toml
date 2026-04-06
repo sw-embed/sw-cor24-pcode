@@ -1,6 +1,6 @@
 number = 13
 slug = "vm-boot-flags"
-status = "pending"
+status = "in-progress"
 description = "Add a vm_flags byte to pvm.s at a patchable address (like code_ptr). Flags co..."
 role = "production"
 context_files = []
