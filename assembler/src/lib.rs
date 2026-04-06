@@ -640,6 +640,14 @@ pub fn assemble(source: &str) -> AssemblyResult {
             line: 0,
             message: "missing .proc main".into(),
         });
+    } else if entry_point != Some(0) {
+        errors.push(AssemblyError {
+            line: 0,
+            message: format!(
+                ".proc main must be the first procedure (at offset 0), but found at offset {}",
+                entry_point.unwrap()
+            ),
+        });
     }
 
     // ── Pass 2: Code Emission ──

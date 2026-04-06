@@ -176,6 +176,25 @@ fn error_missing_main() {
 }
 
 #[test]
+fn error_main_not_first() {
+    let source = "\
+.proc helper 0
+    halt
+.end
+.proc main 0
+    halt
+.end
+";
+    let result = assemble(source);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("must be the first procedure"))
+    );
+}
+
+#[test]
 fn metadata_directives_skipped() {
     let source = "\
 .module test
@@ -430,15 +449,15 @@ fn unit_mode_collects_exports() {
 .unit mathlib
 .export add_nums 2
 
+.proc main 0
+    halt
+.end
+
 .proc add_nums 2
     loada 0
     loada 1
     add
     ret 2
-.end
-
-.proc main 0
-    halt
 .end
 ";
     let result = assemble(source);
@@ -447,7 +466,8 @@ fn unit_mode_collects_exports() {
     assert_eq!(info.name, "mathlib");
     assert_eq!(info.exports.len(), 1);
     assert_eq!(info.exports[0].name, "add_nums");
-    assert_eq!(info.exports[0].offset, 0); // first proc
+    // main is first (4 bytes: enter+halt+leave), add_nums starts at offset 4
+    assert_eq!(info.exports[0].offset, 4);
 }
 
 #[test]
@@ -517,15 +537,15 @@ fn v2_binary_round_trip() {
 .unit mathlib
 .export double 1
 
+.proc main 0
+    halt
+.end
+
 .proc double 1
     loada 0
     dup
     add
     ret 1
-.end
-
-.proc main 0
-    halt
 .end
 ";
     let binary = assemble_to_p24(source).expect("assembly should succeed");
