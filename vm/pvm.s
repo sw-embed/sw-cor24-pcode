@@ -324,6 +324,88 @@ init_raw_bytecode:
 ; UART helpers
 ; ============================================================
 
+; uart_put_hex24 — print 24-bit value in r0 as 6 hex digits
+; Call via: jal r1, (r2) with r2 = uart_put_hex24, r0 = value
+; Non-leaf. Clobbers: r0, r1, r2.
+uart_put_hex24:
+    push r1
+    ; Save value
+    la r2, hex_temp
+    sw r0, 0(r2)
+    ; Print high byte (bits 23-16)
+    lc r2, 16
+    sra r0, r2
+    lcu r2, 0xFF
+    and r0, r2
+    la r2, uart_put_hex8
+    jal r1, (r2)
+    ; Print mid byte (bits 15-8)
+    la r0, hex_temp
+    lw r0, 0(r0)
+    lc r2, 8
+    sra r0, r2
+    lcu r2, 0xFF
+    and r0, r2
+    la r2, uart_put_hex8
+    jal r1, (r2)
+    ; Print low byte (bits 7-0)
+    la r0, hex_temp
+    lw r0, 0(r0)
+    lcu r2, 0xFF
+    and r0, r2
+    la r2, uart_put_hex8
+    jal r1, (r2)
+    pop r1
+    jmp (r1)
+
+; uart_put_hex8 — print byte in r0 as 2 hex digits
+; Non-leaf. Clobbers: r0, r1, r2.
+uart_put_hex8:
+    push r1
+    push r0
+    ; High nybble
+    lc r2, 4
+    sra r0, r2
+    lc r2, 0x0F
+    and r0, r2
+    la r2, uart_put_nybble
+    jal r1, (r2)
+    ; Low nybble
+    pop r0
+    lc r2, 0x0F
+    and r0, r2
+    la r2, uart_put_nybble
+    jal r1, (r2)
+    pop r1
+    jmp (r1)
+
+; uart_put_nybble — print low 4 bits of r0 as hex digit
+; Leaf. Clobbers: r0, r2.
+uart_put_nybble:
+    lc r2, 10
+    clu r0, r2              ; r0 < 10?
+    brt hex_digit_num
+    ; A-F: r0 - 10 + 'A'
+    add r0, -10
+    add r0, 65              ; 'A' = 65
+    bra hex_digit_out
+hex_digit_num:
+    ; 0-9: r0 + '0'
+    add r0, 48              ; '0' = 48
+hex_digit_out:
+    la r2, -65280
+hex_nybble_tx:
+    push r0
+    lb r0, 1(r2)
+    cls r0, z
+    brt hex_nybble_tx
+    pop r0
+    sb r0, 0(r2)
+    jmp (r1)
+
+hex_temp:
+    .word 0
+
 ; uart_putc — send byte in r0 to UART
 ; Call via: jal r1, (r2) with r2 = uart_putc
 ; Clobbers: r0, r2 (r1 = return address, preserved)
@@ -2400,7 +2482,7 @@ op_sys:
     ; id == 2 (GETC)?
     lc r2, 2
     ceq r0, r2
-    brt sys_getc
+    brt sys_getc_j
     ; Reload sys id
     push fp
     la r0, sys_id_temp
@@ -2442,11 +2524,18 @@ op_sys:
     lc r2, 7
     ceq r0, r2
     brt sys_set_irt_j
+    ; id == 8 (DUMP_STATE)?
+    lc r2, 8
+    ceq r0, r2
+    brt sys_dump_j
     ; Unknown sys id — trap
     la r0, op_invalid
     jmp (r0)
 
 ; Jump trampolines for far handlers
+sys_getc_j:
+    la r0, sys_getc
+    jmp (r0)
 sys_led_j:
     la r0, sys_led
     jmp (r0)
@@ -2461,6 +2550,9 @@ sys_rdswitch_j:
     jmp (r0)
 sys_set_irt_j:
     la r0, sys_set_irt_base
+    jmp (r0)
+sys_dump_j:
+    la r0, sys_dump_state
     jmp (r0)
 
 ; sys HALT (id=0): stop VM execution
@@ -2533,6 +2625,116 @@ sys_led:
     sb r0, 0(r2)
     la r0, vm_loop
     jmp (r0)
+
+; sys DUMP_STATE (id=8): print vm_state to UART for debugging
+; Format: "VM: pc=NNNNNN esp=NNNNNN csp=NNNNNN fp=NNNNNN\n"
+;         "    gp=NNNNNN hp=NNNNNN code=NNNNNN irt=NNNNNN u=NN\n"
+sys_dump_state:
+    la r0, vm_state
+    push r0
+    pop fp
+    ; Line 1: "VM: pc="
+    la r0, dump_s_vm
+    la r2, uart_puts
+    jal r1, (r2)
+    lw r0, 0(fp)            ; pc
+    la r2, uart_put_hex24
+    jal r1, (r2)
+    ; " esp="
+    la r0, dump_s_esp
+    la r2, uart_puts
+    jal r1, (r2)
+    lw r0, 3(fp)            ; esp
+    la r2, uart_put_hex24
+    jal r1, (r2)
+    ; " csp="
+    la r0, dump_s_csp
+    la r2, uart_puts
+    jal r1, (r2)
+    lw r0, 6(fp)            ; csp
+    la r2, uart_put_hex24
+    jal r1, (r2)
+    ; " fp="
+    la r0, dump_s_fp
+    la r2, uart_puts
+    jal r1, (r2)
+    lw r0, 9(fp)            ; fp_vm
+    la r2, uart_put_hex24
+    jal r1, (r2)
+    ; newline
+    lc r0, 10
+    la r2, uart_putc
+    jal r1, (r2)
+    ; Line 2: "    gp="
+    la r0, dump_s_gp
+    la r2, uart_puts
+    jal r1, (r2)
+    lw r0, 12(fp)           ; gp
+    la r2, uart_put_hex24
+    jal r1, (r2)
+    ; " hp="
+    la r0, dump_s_hp
+    la r2, uart_puts
+    jal r1, (r2)
+    lw r0, 15(fp)           ; hp
+    la r2, uart_put_hex24
+    jal r1, (r2)
+    ; " code="
+    la r0, dump_s_code
+    la r2, uart_puts
+    jal r1, (r2)
+    lw r0, 18(fp)           ; code
+    la r2, uart_put_hex24
+    jal r1, (r2)
+    ; " irt="
+    la r0, dump_s_irt
+    la r2, uart_puts
+    jal r1, (r2)
+    lw r0, 27(fp)           ; irt_base
+    la r2, uart_put_hex24
+    jal r1, (r2)
+    ; " u="
+    la r0, dump_s_u
+    la r2, uart_puts
+    jal r1, (r2)
+    lbu r0, 33(fp)          ; current_unit
+    la r2, uart_put_hex8
+    jal r1, (r2)
+    ; newline
+    lc r0, 10
+    la r2, uart_putc
+    jal r1, (r2)
+    la r0, vm_loop
+    jmp (r0)
+
+; String constants for dump_state
+dump_s_vm:
+    .byte 86, 77, 58, 32, 112, 99, 61, 0
+    ; "VM: pc=\0"
+dump_s_esp:
+    .byte 32, 101, 115, 112, 61, 0
+    ; " esp=\0"
+dump_s_csp:
+    .byte 32, 99, 115, 112, 61, 0
+    ; " csp=\0"
+dump_s_fp:
+    .byte 32, 102, 112, 61, 0
+    ; " fp=\0"
+dump_s_gp:
+    .byte 32, 32, 32, 32, 103, 112, 61, 0
+    ; "    gp=\0"
+dump_s_hp:
+    .byte 32, 104, 112, 61, 0
+    ; " hp=\0"
+dump_s_code:
+    .byte 32, 99, 111, 100, 101, 61, 0
+    ; " code=\0"
+dump_s_irt:
+    .byte 32, 105, 114, 116, 61, 0
+    ; " irt=\0"
+dump_s_u:
+    .byte 32, 117, 61, 0
+    ; " u=\0"
 
 ; sys SET_IRT_BASE (id=7): pop address, set vm_state.irt_base
 sys_set_irt_base:

@@ -1,0 +1,1 @@
+Created p24-dump CLI tool as second binary in loader crate. Dumps .p24 v1/v2 files (header, exports, imports, code disassembly, data hex dump) and .p24m files (header with offsets, unit table, per-unit IRT entries, per-unit code disassembly with relocated addresses). Added Opcode::mnemonic_from_byte() to pa24r for reverse opcode lookup.

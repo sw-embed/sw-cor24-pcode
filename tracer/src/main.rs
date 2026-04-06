@@ -958,6 +958,21 @@ impl Vm {
                 // READ_SWITCH (always 0 in tracer)
                 self.push_eval(0);
             }
+            7 => {
+                // SET_IRT_BASE (no-op in single-unit tracer)
+                self.pop_eval();
+            }
+            8 => {
+                // DUMP_STATE
+                eprintln!(
+                    "VM: pc={:06X} esp={:06X} csp={:06X} fp={:06X}",
+                    self.pc, self.esp, self.csp, self.fp_vm
+                );
+                eprintln!(
+                    "    gp={:06X} hp={:06X} code={:06X}",
+                    self.gp, self.hp, 0
+                );
+            }
             _ => {
                 eprintln!("pv24t: unknown sys call {id}");
                 self.trap(4);
