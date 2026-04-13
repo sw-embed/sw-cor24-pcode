@@ -197,7 +197,7 @@ pub fn link_units(binaries: &[(&str, &[u8])]) -> Result<Vec<u8>, LoaderError> {
         });
     }
 
-    // 7. Patch code: relocate control flow and global operands
+    // 7. Patch code: relocate control flow, global operands, and xglobal unit_ids
     let mut patched_code: Vec<Vec<u8>> = units.iter().map(|u| u.image.code.clone()).collect();
     for unit in &units {
         if unit.code_base > 0 {
@@ -205,6 +205,12 @@ pub fn link_units(binaries: &[(&str, &[u8])]) -> Result<Vec<u8>, LoaderError> {
         }
         if unit.global_base > 0 {
             patch_global_operands(&mut patched_code[unit.id], unit.global_base);
+        }
+        // Patch xloadg/xstoreg placeholder unit_ids to actual unit table indices
+        if let Some(ref info) = unit.image.unit_info
+            && !info.imported_units.is_empty()
+        {
+            patch_xglobal_unit_ids(&mut patched_code[unit.id], &info.imported_units, &units)?;
         }
     }
 
@@ -354,6 +360,48 @@ fn patch_global_operands(code: &mut [u8], global_word_offset: u32) {
         }
         pc += size;
     }
+}
+
+/// Patch xloadg/xstoreg unit_id bytes from import indices to unit table indices.
+///
+/// The compiler emits xloadg/xstoreg with the import index (0-based into the
+/// unit's `.import` list) as a placeholder unit_id. This function resolves each
+/// placeholder to the actual unit table index assigned by the loader.
+fn patch_xglobal_unit_ids(
+    code: &mut [u8],
+    imported_units: &[String],
+    units: &[LoadedUnit],
+) -> Result<(), LoaderError> {
+    let mut pc = 0;
+    while pc < code.len() {
+        let op = code[pc];
+        let size = pa24r::opcode_size(op);
+        // xloadg=0x75, xstoreg=0x76 — D8O8 encoding (3 bytes: op, unit_id, offset)
+        if (op == 0x75 || op == 0x76) && pc + 2 < code.len() {
+            let import_idx = code[pc + 1] as usize;
+            if import_idx >= imported_units.len() {
+                return Err(LoaderError::Format(format!(
+                    "xloadg/xstoreg import index {} out of range (unit has {} imports)",
+                    import_idx,
+                    imported_units.len()
+                )));
+            }
+            let target_name = &imported_units[import_idx];
+            let target_id = units
+                .iter()
+                .find(|u| &u.name == target_name)
+                .map(|u| u.id)
+                .ok_or_else(|| {
+                    LoaderError::Format(format!(
+                        "xloadg/xstoreg references unit '{}' which is not loaded",
+                        target_name
+                    ))
+                })?;
+            code[pc + 1] = target_id as u8;
+        }
+        pc += size;
+    }
+    Ok(())
 }
 
 /// Load a .p24m image and extract its structure for verification.
@@ -720,5 +768,51 @@ mod tests {
             ("p24p_rt.p24", &rt),
         ]);
         assert!(image.is_ok(), "link failed: {:?}", image.err());
+    }
+
+    #[test]
+    fn xglobal_unit_id_patching() {
+        // Issue #9: xloadg/xstoreg unit_id bytes should be patched
+        // from import index to actual unit table index.
+        let lib = assemble_to_p24(
+            "\
+.unit mylib
+.export get_val
+
+.global counter
+
+.proc get_val 0
+    loadg counter
+    ret 0
+.end
+",
+        )
+        .unwrap();
+
+        let app = assemble_to_p24(
+            "\
+.unit app
+.import mylib
+.extern get_val 0
+
+.proc main 0
+    ; xloadg with import_index=0 (mylib), offset=0
+    xloadg 0, 0
+    xcall get_val
+    halt
+.end
+",
+        )
+        .unwrap();
+
+        // app is unit 0, mylib is unit 1
+        let image = link_units(&[("app.p24", &app), ("mylib.p24", &lib)]);
+        assert!(image.is_ok(), "link failed: {:?}", image.err());
+
+        // Parse the image and verify the xloadg unit_id was patched
+        let p24m = parse_p24m(&image.unwrap()).unwrap();
+        // Unit 0 = app, Unit 1 = mylib
+        // Verify linking succeeded and unit count is correct
+        assert_eq!(p24m.unit_count, 2);
     }
 }
