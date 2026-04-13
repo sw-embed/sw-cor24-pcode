@@ -170,15 +170,12 @@ pub fn link_units(binaries: &[(&str, &[u8])]) -> Result<Vec<u8>, LoaderError> {
                     .iter()
                     .filter(|u| u.name != unit.name) // don't search self
                     .filter_map(|u| {
-                        u.image
-                            .unit_info
-                            .as_ref()
-                            .and_then(|ui| {
-                                ui.exports
-                                    .iter()
-                                    .find(|e| e.name == imp.proc_name)
-                                    .map(|e| (u, e))
-                            })
+                        u.image.unit_info.as_ref().and_then(|ui| {
+                            ui.exports
+                                .iter()
+                                .find(|e| e.name == imp.proc_name)
+                                .map(|e| (u, e))
+                        })
                     })
                     .next()
                     .ok_or_else(|| LoaderError::UnresolvedImport {
@@ -717,8 +714,11 @@ mod tests {
         .unwrap();
 
         // Should resolve without error regardless of file order
-        let image =
-            link_units(&[("app.p24", &app), ("mathlib.p24", &mathlib), ("p24p_rt.p24", &rt)]);
+        let image = link_units(&[
+            ("app.p24", &app),
+            ("mathlib.p24", &mathlib),
+            ("p24p_rt.p24", &rt),
+        ]);
         assert!(image.is_ok(), "link failed: {:?}", image.err());
     }
 }
