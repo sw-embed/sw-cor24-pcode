@@ -1,0 +1,1 @@
+Added vm_flags patchable byte to pvm.s. Bit 0 = verbose boot: prints memory map (reuses sys 8 DUMP_STATE) before execution starts. Set via --patch on cor24-run command line. Bit 1 reserved for trace mode. Three init paths (p24m, p24 header, raw bytecode) all route through init_done which checks the flag. Address documented in .lst output. All 188 Rust + 20 VM tests pass.
