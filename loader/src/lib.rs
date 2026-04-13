@@ -163,21 +163,24 @@ pub fn link_units(binaries: &[(&str, &[u8])]) -> Result<Vec<u8>, LoaderError> {
         let mut entries = Vec::new();
         if let Some(ref info) = unit.image.unit_info {
             for imp in &info.imports {
-                let target_unit =
-                    units
-                        .iter()
-                        .find(|u| u.name == imp.unit_name)
-                        .ok_or_else(|| LoaderError::UnresolvedImport {
-                            unit: unit.name.clone(),
-                            proc_name: imp.proc_name.clone(),
-                            target_unit: imp.unit_name.clone(),
-                        })?;
-
-                let export = target_unit
-                    .image
-                    .unit_info
-                    .as_ref()
-                    .and_then(|info| info.exports.iter().find(|e| e.name == imp.proc_name))
+                // Search all loaded units for one that exports this proc.
+                // The unit_name hint from the assembler may be empty or
+                // incorrect, so we resolve by export name across all units.
+                let (target_unit, export) = units
+                    .iter()
+                    .filter(|u| u.name != unit.name) // don't search self
+                    .filter_map(|u| {
+                        u.image
+                            .unit_info
+                            .as_ref()
+                            .and_then(|ui| {
+                                ui.exports
+                                    .iter()
+                                    .find(|e| e.name == imp.proc_name)
+                                    .map(|e| (u, e))
+                            })
+                    })
+                    .next()
                     .ok_or_else(|| LoaderError::UnresolvedImport {
                         unit: unit.name.clone(),
                         proc_name: imp.proc_name.clone(),
@@ -659,5 +662,63 @@ mod tests {
         let parsed = parse_p24m(&image).unwrap();
         assert_eq!(parsed.unit_count, 1);
         assert_eq!(parsed.units[0].base_addr, 0);
+    }
+
+    #[test]
+    fn multi_import_resolution() {
+        // Issue #8: externs should resolve from whichever unit exports them,
+        // regardless of .import ordering in the source.
+        let rt = assemble_to_p24(
+            "\
+.unit p24p_rt
+.export write_int
+
+.proc write_int 1
+    loada 0
+    sys 2
+    ret 1
+.end
+",
+        )
+        .unwrap();
+
+        let mathlib = assemble_to_p24(
+            "\
+.unit mathlib
+.export add_nums
+
+.proc add_nums 2
+    loada 0
+    loada 1
+    add
+    ret 2
+.end
+",
+        )
+        .unwrap();
+
+        let app = assemble_to_p24(
+            "\
+.unit app
+.import p24p_rt
+.import mathlib
+.extern write_int 1
+.extern add_nums 2
+
+.proc main 0
+    push 3
+    push 4
+    xcall add_nums
+    xcall write_int
+    halt
+.end
+",
+        )
+        .unwrap();
+
+        // Should resolve without error regardless of file order
+        let image =
+            link_units(&[("app.p24", &app), ("mathlib.p24", &mathlib), ("p24p_rt.p24", &rt)]);
+        assert!(image.is_ok(), "link failed: {:?}", image.err());
     }
 }

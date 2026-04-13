@@ -462,7 +462,7 @@ pub fn assemble(source: &str) -> AssemblyResult {
     let mut unit_name: Option<String> = None;
     let mut export_names: Vec<(String, u8)> = Vec::new(); // (name, nargs)
     let mut imported_units: Vec<String> = Vec::new();
-    let mut extern_slots: Vec<(String, String)> = Vec::new(); // (proc_name, unit_name) — unit inferred
+    let mut extern_slots: Vec<(String, String)> = Vec::new(); // (proc_name, unit_name) — resolved by loader
     let mut next_extern_slot: u16 = 0;
 
     // ── Pass 1: Symbol Collection ──
@@ -639,9 +639,9 @@ pub fn assemble(source: &str) -> AssemblyResult {
                         if let Some(name) = name {
                             let slot = next_extern_slot;
                             next_extern_slot += 1;
-                            // Infer unit name: use the most recently declared .import
-                            let unit = imported_units.last().cloned().unwrap_or_default();
-                            extern_slots.push((name.clone(), unit));
+                            // Unit name left empty — the loader resolves each
+                            // extern by searching all loaded units for a matching export.
+                            extern_slots.push((name.clone(), String::new()));
                             if let Err(e) = insert_symbol(
                                 &mut symbols,
                                 &name,
@@ -708,7 +708,7 @@ pub fn assemble(source: &str) -> AssemblyResult {
         }
     }
 
-    if entry_point.is_none() {
+    if entry_point.is_none() && unit_name.is_none() {
         errors.push(AssemblyError {
             line: 0,
             message: "missing .proc main".into(),

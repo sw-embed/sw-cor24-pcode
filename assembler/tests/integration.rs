@@ -493,10 +493,32 @@ fn unit_mode_collects_imports() {
     let info = result.unit_info.as_ref().expect("should have unit_info");
     assert_eq!(info.name, "app");
     assert_eq!(info.imports.len(), 1);
-    assert_eq!(info.imports[0].unit_name, "mathlib");
+    assert_eq!(info.imports[0].unit_name, ""); // resolved by loader, not assembler
     assert_eq!(info.imports[0].proc_name, "add_nums");
     assert_eq!(info.imports[0].slot, 0);
     assert_eq!(info.imported_units, vec!["mathlib"]);
+}
+
+#[test]
+fn unit_without_main_assembles() {
+    // Library units should not require .proc main (issue #7)
+    let source = "\
+.unit mathlib
+.export double
+
+.proc double 1
+    load 0
+    dup
+    add
+    ret 1
+.end
+";
+    let result = assemble(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let info = result.unit_info.as_ref().expect("should have unit_info");
+    assert_eq!(info.name, "mathlib");
+    assert_eq!(info.exports.len(), 1);
+    assert_eq!(info.exports[0].name, "double");
 }
 
 #[test]
@@ -593,7 +615,7 @@ fn v2_with_imports_round_trip() {
     let info = loaded.unit_info.as_ref().expect("should have unit_info");
     assert_eq!(info.name, "app");
     assert_eq!(info.imports.len(), 1);
-    assert_eq!(info.imports[0].unit_name, "mathlib");
+    assert_eq!(info.imports[0].unit_name, ""); // resolved by loader, not assembler
     assert_eq!(info.imports[0].proc_name, "double");
     assert_eq!(info.imports[0].slot, 0);
 }
