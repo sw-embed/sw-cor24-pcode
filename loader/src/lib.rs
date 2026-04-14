@@ -201,7 +201,8 @@ pub fn link_units(binaries: &[(&str, &[u8])]) -> Result<Vec<u8>, LoaderError> {
     let mut patched_code: Vec<Vec<u8>> = units.iter().map(|u| u.image.code.clone()).collect();
     for unit in &units {
         if unit.code_base > 0 {
-            patch_code_relocations(&mut patched_code[unit.id], unit.code_base);
+            let data_size = unit.image.data.len() as u32;
+            patch_code_relocations(&mut patched_code[unit.id], unit.code_base, data_size);
         }
         if unit.global_base > 0 {
             patch_global_operands(&mut patched_code[unit.id], unit.global_base);
@@ -289,7 +290,11 @@ pub fn link_units(binaries: &[(&str, &[u8])]) -> Result<Vec<u8>, LoaderError> {
 /// adjusted to absolute offsets in the combined code segment.
 /// Also patches push operands that reference data (data refs are >= code_size
 /// within the unit, but in the combined image they need the code_base added).
-fn patch_code_relocations(code: &mut [u8], code_base: u32) {
+fn patch_code_relocations(code: &mut [u8], code_base: u32, data_size: u32) {
+    let code_len = code.len() as u32;
+    // Data refs live in [code_len, code_len + data_size). Anything else
+    // (including negative literals like -1 = 0xFFFFFF) must not be patched.
+    let data_end = code_len + data_size;
     let mut pc = 0;
     while pc < code.len() {
         let op = code[pc];
@@ -311,24 +316,14 @@ fn patch_code_relocations(code: &mut [u8], code_base: u32) {
                 code[pc + 3] = (patched >> 8) as u8;
                 code[pc + 4] = (patched >> 16) as u8;
             }
-            // push=0x01 — relocate data/global refs (values that were
-            // originally code-relative). All push operands in non-zero units
-            // need code_base added since the assembler computes them relative
-            // to the unit's own code segment start.
+            // push=0x01 — data refs are emitted by the assembler as
+            // offsets in [code_len, code_len + data_size). Literals (both
+            // positive and negative) fall outside this range and must not
+            // be relocated. Negative literals like -1 = 0xFFFFFF would
+            // otherwise wrap around and corrupt the value.
             0x01 if pc + 3 < code.len() => {
                 let val = read_le24(&code[pc + 1..pc + 4]);
-                // Only relocate non-zero push operands that look like
-                // code-relative addresses (data refs, global refs).
-                // Small constants (< unit's code size) could be code labels
-                // or literal values. We relocate ALL push operands for units
-                // at non-zero base — the assembler resolves data/global refs
-                // as offsets from code start, and those need relocation.
-                // Literal integer constants (e.g., push 42) would be wrong
-                // to relocate. We distinguish by checking if the value is
-                // >= the unit's code length (data/global refs are always
-                // >= code_size after assembly).
-                // For safety: only relocate values >= code.len() (data refs).
-                if val >= code.len() as u32 {
+                if val >= code_len && val < data_end {
                     let patched = val + code_base;
                     code[pc + 1] = patched as u8;
                     code[pc + 2] = (patched >> 8) as u8;
