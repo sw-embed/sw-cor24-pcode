@@ -4,9 +4,17 @@ version = "0.1.0"
 edition = "2024"
 description = "P-code trace interpreter for COR24 — reads .p24 binaries, executes with optional instruction-level tracing"
 
+[lib]
+name = "pv24t"
+path = "src/lib.rs"
+
 [[bin]]
 name = "pv24t"
 path = "src/main.rs"
+
+[[bin]]
+name = "pv24d"
+path = "src/bin/pv24d.rs"
 
 [dependencies]
 pa24r = { path = "../assembler" }

@@ -391,7 +391,7 @@ impl std::fmt::Display for AssemblyError {
 }
 
 /// A loaded .p24 binary image.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LoadedImage {
     pub entry_point: u32,
     pub code: Vec<u8>,
