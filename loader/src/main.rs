@@ -1,21 +1,42 @@
 // p24-load — CLI for linking multiple .p24 units into a .p24m image
 
+use p24_load::LinkOptions;
 use std::{fs, process};
+
+fn parse_addr(s: &str) -> Option<u32> {
+    let s = s.trim();
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u32::from_str_radix(hex, 16).ok()
+    } else {
+        s.parse::<u32>().ok()
+    }
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 2 || args.iter().any(|a| a == "-h" || a == "--help") {
-        eprintln!("Usage: p24-load <unit1.p24> [unit2.p24 ...] -o <output.p24m>");
+        eprintln!(
+            "Usage: p24-load <unit1.p24> [unit2.p24 ...] -o <output.p24m> [--load-addr <addr>]"
+        );
         eprintln!();
         eprintln!("Links multiple .p24 unit files into a single .p24m multi-unit image.");
         eprintln!("The first file is the entry unit (execution starts at its main).");
+        eprintln!();
+        eprintln!("Options:");
+        eprintln!("  -o <file>            Output .p24m file (required)");
+        eprintln!("  --load-addr <addr>   Runtime VM load address (hex or dec, default 0).");
+        eprintln!("                       Baked into push <data_ref> operands so strings");
+        eprintln!("                       and other data refs dereference correctly at");
+        eprintln!("                       runtime. Use 0x010000 for standard cor24-run");
+        eprintln!("                       --load-binary placement.");
         process::exit(if args.len() < 2 { 1 } else { 0 });
     }
 
     // Parse args: collect input files and -o output
     let mut inputs: Vec<String> = Vec::new();
     let mut output: Option<String> = None;
+    let mut load_addr: u32 = 0;
     let mut i = 1;
     while i < args.len() {
         if args[i] == "-o" {
@@ -25,6 +46,16 @@ fn main() {
                 process::exit(1);
             }
             output = Some(args[i].clone());
+        } else if args[i] == "--load-addr" {
+            i += 1;
+            if i >= args.len() {
+                eprintln!("error: --load-addr requires an argument");
+                process::exit(1);
+            }
+            load_addr = parse_addr(&args[i]).unwrap_or_else(|| {
+                eprintln!("error: invalid --load-addr value: '{}'", args[i]);
+                process::exit(1);
+            });
         } else {
             inputs.push(args[i].clone());
         }
@@ -56,17 +87,19 @@ fn main() {
         .map(|(name, data)| (name.as_str(), data.as_slice()))
         .collect();
 
-    match p24_load::link_units(&refs) {
+    let opts = LinkOptions { load_addr };
+    match p24_load::link_units_with_opts(&refs, opts) {
         Ok(image) => {
             fs::write(&output, &image).unwrap_or_else(|e| {
                 eprintln!("error: cannot write '{output}': {e}");
                 process::exit(1);
             });
             eprintln!(
-                "Linked {} unit(s) → {} ({} bytes)",
+                "Linked {} unit(s) → {} ({} bytes, load_addr=0x{:06X})",
                 inputs.len(),
                 output,
-                image.len()
+                image.len(),
+                load_addr
             );
         }
         Err(e) => {

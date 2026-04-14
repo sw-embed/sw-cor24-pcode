@@ -85,8 +85,30 @@ impl std::fmt::Display for LoaderError {
     }
 }
 
+/// Options controlling how units are linked into a `.p24m` image.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LinkOptions {
+    /// Runtime load address of the `.p24m` in VM memory. Used to bake absolute
+    /// addresses into `push <data_ref>` operands so that `loadb`/`loadw` against
+    /// the pushed pointer reads the correct byte at runtime.
+    ///
+    /// Default: 0. Set to e.g. 0x010000 if `cor24-run --load-binary` places the
+    /// image at that address.
+    pub load_addr: u32,
+}
+
 /// Load and link multiple .p24 files into a .p24m image.
+///
+/// Convenience wrapper for `link_units_with_opts` using defaults (load_addr=0).
 pub fn link_units(binaries: &[(&str, &[u8])]) -> Result<Vec<u8>, LoaderError> {
+    link_units_with_opts(binaries, LinkOptions::default())
+}
+
+/// Load and link multiple .p24 files into a .p24m image, with options.
+pub fn link_units_with_opts(
+    binaries: &[(&str, &[u8])],
+    opts: LinkOptions,
+) -> Result<Vec<u8>, LoaderError> {
     if binaries.is_empty() {
         return Err(LoaderError::NoUnits);
     }
@@ -197,28 +219,7 @@ pub fn link_units(binaries: &[(&str, &[u8])]) -> Result<Vec<u8>, LoaderError> {
         });
     }
 
-    // 7. Patch code: relocate control flow, global operands, and xglobal unit_ids
-    let mut patched_code: Vec<Vec<u8>> = units.iter().map(|u| u.image.code.clone()).collect();
-    for unit in &units {
-        if unit.code_base > 0 {
-            let data_size = unit.image.data.len() as u32;
-            patch_code_relocations(&mut patched_code[unit.id], unit.code_base, data_size);
-        }
-        if unit.global_base > 0 {
-            patch_global_operands(&mut patched_code[unit.id], unit.global_base);
-        }
-        // Patch xloadg/xstoreg placeholder unit_ids to actual unit table indices
-        if let Some(ref info) = unit.image.unit_info
-            && !info.imported_units.is_empty()
-        {
-            patch_xglobal_unit_ids(&mut patched_code[unit.id], &info.imported_units, &units)?;
-        }
-    }
-
-    // 8. Emit .p24m image
-    let mut image = Vec::new();
-
-    // Compute layout offsets
+    // 7. Compute layout offsets (needed for patching push data-refs)
     let unit_table_off = P24M_HEADER_SIZE as u32;
     let unit_table_size = (units.len() as u32) * 9; // 9 bytes per unit
     let irt_off = unit_table_off + unit_table_size;
@@ -234,6 +235,51 @@ pub fn link_units(binaries: &[(&str, &[u8])]) -> Result<Vec<u8>, LoaderError> {
     let total_data: u32 = units.iter().map(|u| u.image.data.len() as u32).sum();
 
     let globals_off = data_off + total_data;
+
+    // Per-unit data offset within the combined data section (sum of prior data sizes)
+    let mut unit_data_bases: Vec<u32> = Vec::with_capacity(units.len());
+    let mut running_data: u32 = 0;
+    for unit in &units {
+        unit_data_bases.push(running_data);
+        running_data += unit.image.data.len() as u32;
+    }
+
+    // 8. Patch code: relocate control flow, push data-refs, global operands, and xglobal unit_ids
+    let mut patched_code: Vec<Vec<u8>> = units.iter().map(|u| u.image.code.clone()).collect();
+    for unit in &units {
+        if unit.code_base > 0 {
+            patch_code_relocations(&mut patched_code[unit.id], unit.code_base);
+        }
+        // Rewrite push <data_ref> operands to absolute VM addresses.
+        // Data byte d in unit u lands at:
+        //   load_addr + code_off (start of code section in image)
+        //             + total_code (skip all code to reach data section)
+        //             + unit_data_base (skip prior units' data)
+        //             + d
+        let data_base_abs = opts
+            .load_addr
+            .wrapping_add(code_off)
+            .wrapping_add(total_code)
+            .wrapping_add(unit_data_bases[unit.id]);
+        patch_data_ref_pushes(
+            &mut patched_code[unit.id],
+            unit.image.code.len() as u32,
+            unit.image.data.len() as u32,
+            data_base_abs,
+        );
+        if unit.global_base > 0 {
+            patch_global_operands(&mut patched_code[unit.id], unit.global_base);
+        }
+        // Patch xloadg/xstoreg placeholder unit_ids to actual unit table indices
+        if let Some(ref info) = unit.image.unit_info
+            && !info.imported_units.is_empty()
+        {
+            patch_xglobal_unit_ids(&mut patched_code[unit.id], &info.imported_units, &units)?;
+        }
+    }
+
+    // 9. Emit .p24m image
+    let mut image = Vec::new();
 
     // Header
     image.extend_from_slice(&P24M_MAGIC);
@@ -287,14 +333,10 @@ pub fn link_units(binaries: &[(&str, &[u8])]) -> Result<Vec<u8>, LoaderError> {
 ///
 /// When multiple units are concatenated, each unit's internal call/jmp/jz/jnz
 /// targets (which are code offsets relative to the unit's start) need to be
-/// adjusted to absolute offsets in the combined code segment.
-/// Also patches push operands that reference data (data refs are >= code_size
-/// within the unit, but in the combined image they need the code_base added).
-fn patch_code_relocations(code: &mut [u8], code_base: u32, data_size: u32) {
-    let code_len = code.len() as u32;
-    // Data refs live in [code_len, code_len + data_size). Anything else
-    // (including negative literals like -1 = 0xFFFFFF) must not be patched.
-    let data_end = code_len + data_size;
+/// adjusted to absolute offsets in the combined code segment. Control flow
+/// targets remain code-section-relative at runtime: the VM dispatches PC via
+/// `code_ptr + pc`, so code_ptr accounts for the final load address.
+fn patch_code_relocations(code: &mut [u8], code_base: u32) {
     let mut pc = 0;
     while pc < code.len() {
         let op = code[pc];
@@ -316,21 +358,44 @@ fn patch_code_relocations(code: &mut [u8], code_base: u32, data_size: u32) {
                 code[pc + 3] = (patched >> 8) as u8;
                 code[pc + 4] = (patched >> 16) as u8;
             }
-            // push=0x01 — data refs are emitted by the assembler as
-            // offsets in [code_len, code_len + data_size). Literals (both
-            // positive and negative) fall outside this range and must not
-            // be relocated. Negative literals like -1 = 0xFFFFFF would
-            // otherwise wrap around and corrupt the value.
-            0x01 if pc + 3 < code.len() => {
-                let val = read_le24(&code[pc + 1..pc + 4]);
-                if val >= code_len && val < data_end {
-                    let patched = val + code_base;
-                    code[pc + 1] = patched as u8;
-                    code[pc + 2] = (patched >> 8) as u8;
-                    code[pc + 3] = (patched >> 16) as u8;
-                }
-            }
             _ => {}
+        }
+        pc += size;
+    }
+}
+
+/// Patch `push` operands that reference this unit's data section.
+///
+/// The assembler emits `push <data_ref>` with value `unit_code_len + d`, where
+/// d is the data byte's offset within the unit. That scheme assumes data
+/// immediately follows code at runtime, which is true for standalone `.p24`
+/// but NOT for `.p24m`: data is concatenated after ALL code, not right after
+/// each unit's code.
+///
+/// `data_base_abs` is the absolute VM address where this unit's data section
+/// begins once the `.p24m` is loaded. Pushes that fall in the data range are
+/// rewritten to point directly at the correct byte. Literals (including
+/// negative ones like -1 = 0xFFFFFF) are left alone.
+fn patch_data_ref_pushes(
+    code: &mut [u8],
+    unit_code_len: u32,
+    unit_data_size: u32,
+    data_base_abs: u32,
+) {
+    let data_end = unit_code_len + unit_data_size;
+    let mut pc = 0;
+    while pc < code.len() {
+        let op = code[pc];
+        let size = pa24r::opcode_size(op);
+        if op == 0x01 && pc + 3 < code.len() {
+            let val = read_le24(&code[pc + 1..pc + 4]);
+            if val >= unit_code_len && val < data_end {
+                let d = val - unit_code_len;
+                let patched = data_base_abs.wrapping_add(d);
+                code[pc + 1] = patched as u8;
+                code[pc + 2] = (patched >> 8) as u8;
+                code[pc + 3] = (patched >> 16) as u8;
+            }
         }
         pc += size;
     }
@@ -809,5 +874,127 @@ mod tests {
         // Unit 0 = app, Unit 1 = mylib
         // Verify linking succeeded and unit count is correct
         assert_eq!(p24m.unit_count, 2);
+    }
+
+    #[test]
+    fn data_ref_push_relocated_to_absolute_addr() {
+        // Issue #12: push <data_ref> operands must be rewritten to the absolute
+        // VM address where the data byte actually lives in the linked .p24m,
+        // not to the unit-relative offset the assembler emits.
+        //
+        // This unit has a .data byte (ASCII 'A' = 0x41) and pushes its address.
+        // The assembler emits `push <code_len + 0>` (offset 0 into data). After
+        // linking with load_addr=0x010000, the push operand should be the
+        // absolute VM address of that data byte.
+        let source = "\
+.unit strtest
+.export get_addr
+.data the_str 65, 0
+
+.proc get_addr 0
+    push the_str
+    ret 0
+.end
+";
+        let binary = assemble_to_p24(source).unwrap();
+        let loaded = load_p24(&binary).unwrap();
+        let unit_code_len = loaded.code.len() as u32;
+        let data_len = loaded.data.len() as u32;
+        assert!(data_len >= 2, "test fixture must have data bytes");
+
+        // Link with load_addr = 0x010000 (standard cor24-run placement)
+        let load_addr: u32 = 0x010000;
+        let image =
+            link_units_with_opts(&[("strtest.p24", &binary)], LinkOptions { load_addr }).unwrap();
+
+        // Parse the .p24m to find code section start in the file
+        let parsed = parse_p24m(&image).unwrap();
+        let code_off = parsed.code_off as u32;
+        let total_code = parsed.total_code;
+
+        // The absolute VM address where unit 0's first data byte lives:
+        //   load_addr + code_off + total_code + 0 (prior data = 0 for first unit)
+        let expected_push_val = load_addr + code_off + total_code;
+
+        // Find the push instruction's operand in the linked code.
+        let code_start = code_off as usize;
+        let code_end = code_start + unit_code_len as usize;
+        let code = &image[code_start..code_end];
+
+        // Scan for 0x01 (push) opcode and read its 24-bit operand.
+        let mut found = false;
+        let mut pc = 0;
+        while pc < code.len() {
+            let op = code[pc];
+            let size = pa24r::opcode_size(op);
+            if op == 0x01 && pc + 3 < code.len() {
+                let val = (code[pc + 1] as u32)
+                    | ((code[pc + 2] as u32) << 8)
+                    | ((code[pc + 3] as u32) << 16);
+                // The data-ref push: this unit's only push operand that lands
+                // in the original [code_len, code_len+data_size) range.
+                // After patching we expect the absolute VM address instead.
+                assert_eq!(
+                    val, expected_push_val,
+                    "push <data_ref> should be relocated to absolute VM addr"
+                );
+                found = true;
+                break;
+            }
+            pc += size;
+        }
+        assert!(found, "expected to find a push instruction in code");
+    }
+
+    #[test]
+    fn literals_not_relocated_by_data_ref_patch() {
+        // Regression: push of a literal value (like -1 = 0xFFFFFF, or any
+        // constant outside the data range) must not be mistakenly patched.
+        let source = "\
+.proc main 0
+    push -1
+    push 7
+    drop
+    drop
+    halt
+.end
+";
+        let binary = assemble_to_p24(source).unwrap();
+        let image = link_units_with_opts(
+            &[("app.p24", &binary)],
+            LinkOptions {
+                load_addr: 0x010000,
+            },
+        )
+        .unwrap();
+        let parsed = parse_p24m(&image).unwrap();
+        let code_start = parsed.code_off;
+        let code_end = code_start + parsed.total_code as usize;
+        let code = &image[code_start..code_end];
+
+        // Walk the code, collect all push operands, verify the literals survive
+        let mut pc = 0;
+        let mut literals = Vec::new();
+        while pc < code.len() {
+            let op = code[pc];
+            let size = pa24r::opcode_size(op);
+            if op == 0x01 && pc + 3 < code.len() {
+                let val = (code[pc + 1] as u32)
+                    | ((code[pc + 2] as u32) << 8)
+                    | ((code[pc + 3] as u32) << 16);
+                literals.push(val);
+            }
+            pc += size;
+        }
+        assert!(
+            literals.contains(&0x00FFFFFF),
+            "push -1 (0xFFFFFF) should survive relocation; got {:?}",
+            literals
+        );
+        assert!(
+            literals.contains(&7),
+            "push 7 should survive relocation; got {:?}",
+            literals
+        );
     }
 }
