@@ -1,6 +1,7 @@
 // p24-load — CLI for linking multiple .p24 units into a .p24m image
 
 use p24_load::LinkOptions;
+use pa24r::load_p24;
 use std::{fs, process};
 
 fn parse_addr(s: &str) -> Option<u32> {
@@ -37,6 +38,7 @@ fn main() {
     let mut inputs: Vec<String> = Vec::new();
     let mut output: Option<String> = None;
     let mut load_addr: u32 = 0;
+    let mut load_addr_specified = false;
     let mut i = 1;
     while i < args.len() {
         if args[i] == "-o" {
@@ -56,6 +58,7 @@ fn main() {
                 eprintln!("error: invalid --load-addr value: '{}'", args[i]);
                 process::exit(1);
             });
+            load_addr_specified = true;
         } else {
             inputs.push(args[i].clone());
         }
@@ -86,6 +89,27 @@ fn main() {
         .iter()
         .map(|(name, data)| (name.as_str(), data.as_slice()))
         .collect();
+
+    // Warn if any unit has a .data section but --load-addr was not specified.
+    // Without the flag, push <data_ref> operands aren't relocated to their
+    // final VM addresses and loadb/loadw will read wrong memory at runtime.
+    if !load_addr_specified {
+        let units_with_data: Vec<&str> = refs
+            .iter()
+            .filter_map(|(name, data)| match load_p24(data) {
+                Ok(img) if !img.data.is_empty() => Some(*name),
+                _ => None,
+            })
+            .collect();
+        if !units_with_data.is_empty() {
+            eprintln!("p24-load: warning: linking units with .data sections without --load-addr.");
+            eprintln!("  Data-ref pushes will not be relocated and loadb/loadw will read");
+            eprintln!("  wrong memory at runtime. Use --load-addr 0x<runtime load address>");
+            eprintln!("  (e.g. 0x010000 for cor24-run --load-binary).");
+            eprintln!("  Units with data: {}", units_with_data.join(", "));
+            eprintln!("  To silence this warning, pass --load-addr 0 explicitly.");
+        }
+    }
 
     let opts = LinkOptions { load_addr };
     match p24_load::link_units_with_opts(&refs, opts) {
