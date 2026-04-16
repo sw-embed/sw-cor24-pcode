@@ -3084,6 +3084,21 @@ op_call:
     ; Build frame header on call stack
     lw r2, 6(fp)
     ; r2 = csp
+    ; Check call stack overflow: csp + 12 must fit below eval_stack.
+    ; On overflow, trap 2 (STACK_OVERFLOW) instead of corrupting eval_stack.
+    mov r1, r2
+    add r1, 12
+    push r0
+    la r0, eval_stack
+    clu r1, r0
+    brt call_csp_ok
+    pop r0
+    pop r0
+    lc r0, 2
+    la r2, vm_trap
+    jmp (r2)
+call_csp_ok:
+    pop r0
     sw r0, 0(r2)
     ; frame[0] = return PC
     lw r0, 9(fp)
@@ -3266,6 +3281,20 @@ calln_chain_done:
     ; Build frame header on call stack
     lw r2, 6(fp)
     ; r2 = csp
+    ; Check call stack overflow: csp + 12 must fit below eval_stack.
+    mov r1, r2
+    add r1, 12
+    push r0
+    la r0, eval_stack
+    clu r1, r0
+    brt calln_csp_ok
+    pop r0
+    pop r0
+    lc r0, 2
+    la r2, vm_trap
+    jmp (r2)
+calln_csp_ok:
+    pop r0
     sw r0, 0(r2)
     ; frame[0] = return PC
     lw r0, 9(fp)
@@ -3313,6 +3342,14 @@ op_enter:
     ; r0 = nlocals * 3
     lw r2, 6(fp)
     add r2, r0
+    ; Check call stack overflow: new_csp must fit below eval_stack.
+    la r1, eval_stack
+    clu r2, r1
+    brt enter_csp_ok
+    lc r0, 2
+    la r2, vm_trap
+    jmp (r2)
+enter_csp_ok:
     sw r2, 6(fp)
     la r0, vm_loop
     jmp (r0)
@@ -4189,6 +4226,16 @@ op_xcall:
 
     ; 4. Build call frame on call stack
     lw r2, 6(fp)            ; r2 = csp
+    ; Check call stack overflow: csp + 12 must fit below eval_stack.
+    mov r1, r2
+    add r1, 12
+    la r0, eval_stack
+    clu r1, r0
+    brt xcall_csp_ok
+    lc r0, 2
+    la r2, vm_trap
+    jmp (r2)
+xcall_csp_ok:
     ; frame[0] = return_pc
     la r0, xcall_temps
     lw r0, 0(r0)

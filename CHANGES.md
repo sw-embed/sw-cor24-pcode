@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-04-16 -- Call stack overflow detection and deeper call stack
+
+- Added call stack bounds checks in op_call, op_calln, op_enter, and
+  op_xcall: each verifies that the new csp stays below eval_stack before
+  writing frame slots. On overflow, dispatches trap 2 (STACK_OVERFLOW)
+  instead of silently corrupting eval_stack (pvm.s and pvmasm.s both
+  updated to stay in sync)
+- Expanded call_stack from 1536 to 4096 bytes — sized for realistic
+  recursive workloads (e.g., OCaml eval_expr ~57 B/frame → ~72 frames
+  of headroom before trapping)
+- All 188 Rust tests + 20 VM tests pass
+
 ## 2026-04-06 -- Multi-unit integration tests and code relocation
 
 - End-to-end multi-unit test: mathlib (gcd + factorial) xcalled from app
