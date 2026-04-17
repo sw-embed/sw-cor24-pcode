@@ -58,9 +58,9 @@ pub struct Vm {
     pub max_instructions: u64,
 }
 
-pub const CALL_STACK_WORDS: usize = 256;
-pub const EVAL_STACK_WORDS: usize = 256;
-pub const HEAP_WORDS: usize = 256;
+pub const CALL_STACK_WORDS: usize = 4096;
+pub const EVAL_STACK_WORDS: usize = 4096;
+pub const HEAP_WORDS: usize = 65536;
 pub const WORD: usize = 3;
 
 impl Vm {
