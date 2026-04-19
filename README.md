@@ -35,8 +35,12 @@ cd vm && ./demo.sh
 - [sw-cor24-pascal](https://github.com/sw-embed/sw-cor24-pascal) -- Pascal compiler (emits .spc)
 - [web-sw-cor24-pcode](https://github.com/sw-embed/web-sw-cor24-pcode) -- browser-based p-code debugger
 
+## Links
+
+- Blog: [Software Wrighter Lab](https://software-wrighter-lab.github.io/)
+- Discord: [Join the community](https://discord.com/invite/Ctzk5uHggZ)
+- YouTube: [Software Wrighter](https://www.youtube.com/@SoftwareWrighter)
+
 ## License
 
-MIT -- see [LICENSE](LICENSE) for details.
-
-Copyright (c) 2026 Michael A Wright
+Copyright (c) 2026 Michael A Wright. MIT-licensed; see [LICENSE](LICENSE).
