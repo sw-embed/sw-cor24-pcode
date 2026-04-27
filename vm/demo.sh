@@ -179,6 +179,7 @@ run_tests() {
     check "t14-memcmp"        "tests/t14-memcmp.spc"        "OKLTOKGT"
     check "t15-jmp_ind"       "tests/t15-jmp_ind.spc"       "ABOK"
     check "t16-xcall"         "tests/t16-xcall.spc"         "XOK"
+    check "t19-malloc-reuse"  "tests/t19-malloc-reuse.spc"  "OK"
 
     echo ""
     echo "${BOLD}Linked programs:${NC}"
