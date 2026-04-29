@@ -911,6 +911,17 @@ impl Vm {
                 );
                 eprintln!("    gp={:06X} hp={:06X} code={:06X}", self.gp, self.hp, 0);
             }
+            9 => {
+                // INKEY
+                let ch = if self.stdin_pos < self.stdin_buf.len() {
+                    let c = self.stdin_buf[self.stdin_pos];
+                    self.stdin_pos += 1;
+                    c as i32
+                } else {
+                    -1
+                };
+                self.push_eval(ch);
+            }
             _ => {
                 eprintln!("pv24t: unknown sys call {id}");
                 self.trap(4);
@@ -1034,4 +1045,40 @@ pub fn disasm_one(code: &[u8], pc: usize) -> (String, usize) {
         _ => format!("{name} <size {size}>"),
     };
     (text, size)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn image() -> pa24r::LoadedImage {
+        pa24r::LoadedImage {
+            entry_point: 0,
+            code: Vec::new(),
+            data: Vec::new(),
+            global_count: 0,
+            version: 1,
+            unit_info: None,
+        }
+    }
+
+    #[test]
+    fn inkey_returns_minus_one_when_input_empty() {
+        let mut vm = Vm::new(image(), Vec::new(), false, 0);
+
+        vm.sys_call(9);
+
+        assert_eq!(vm.pop_eval(), -1);
+    }
+
+    #[test]
+    fn inkey_returns_buffered_byte_without_blocking() {
+        let mut vm = Vm::new(image(), b"A".to_vec(), false, 0);
+
+        vm.sys_call(9);
+        vm.sys_call(9);
+
+        assert_eq!(vm.pop_eval(), -1);
+        assert_eq!(vm.pop_eval(), b'A' as i32);
+    }
 }

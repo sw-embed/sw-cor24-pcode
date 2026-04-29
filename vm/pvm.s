@@ -2536,11 +2536,11 @@ op_sys:
     ; Dispatch: id == 0 (HALT)?
     mov r0, r2
     ceq r0, z
-    brt sys_halt
+    brt sys_halt_j
     ; id == 1 (PUTC)?
     lc r2, 1
     ceq r0, r2
-    brt sys_putc
+    brt sys_putc_j
     ; Reload sys id for further checks
     push fp
     la r0, sys_id_temp
@@ -2597,11 +2597,21 @@ op_sys:
     lc r2, 8
     ceq r0, r2
     brt sys_dump_j
+    ; id == 9 (INKEY)?
+    lc r2, 9
+    ceq r0, r2
+    brt sys_inkey_j
     ; Unknown sys id — trap
     la r0, op_invalid
     jmp (r0)
 
 ; Jump trampolines for far handlers
+sys_halt_j:
+    la r0, sys_halt
+    jmp (r0)
+sys_putc_j:
+    la r0, sys_putc
+    jmp (r0)
 sys_getc_j:
     la r0, sys_getc
     jmp (r0)
@@ -2622,6 +2632,9 @@ sys_set_irt_j:
     jmp (r0)
 sys_dump_j:
     la r0, sys_dump_state
+    jmp (r0)
+sys_inkey_j:
+    la r0, sys_inkey
     jmp (r0)
 
 ; sys HALT (id=0): stop VM execution
@@ -2667,6 +2680,35 @@ sys_getc_wait:
     la r2, -65280
     lbu r0, 0(r2)
     ; r0 = received byte; push onto eval stack
+    la r2, vm_state
+    push r2
+    pop fp
+    lw r2, 3(fp)
+    ; r2 = esp
+    sw r0, 0(r2)
+    add r2, 3
+    sw r2, 3(fp)
+    la r0, vm_loop
+    jmp (r0)
+
+; sys INKEY (id=9): non-blocking UART read, push byte or -1 if empty
+sys_inkey:
+    la r2, -65280
+    lbu r0, 1(r2)
+    ; bit 0 = RX ready; mask it
+    lc r2, 1
+    and r0, r2
+    ceq r0, z
+    brt sys_inkey_empty
+    ; RX ready — read data byte
+    la r2, -65280
+    lbu r0, 0(r2)
+    bra sys_inkey_push
+sys_inkey_empty:
+    lc r0, 0
+    add r0, -1
+sys_inkey_push:
+    ; r0 = received byte or -1 sentinel; push onto eval stack
     la r2, vm_state
     push r2
     pop fp
