@@ -4425,11 +4425,11 @@ op_sys:
     ; Dispatch: id == 0 (HALT)?
     mov r0, r2
     ceq r0, z
-    brt sys_halt
+    brt sys_halt_j
     ; id == 1 (PUTC)?
     lc r2, 1
     ceq r0, r2
-    brt sys_putc
+    brt sys_putc_j
     ; Reload sys id for further checks
     push fp
     la r0, sys_id_temp
@@ -4486,11 +4486,21 @@ op_sys:
     lc r2, 8
     ceq r0, r2
     brt sys_dump_j
+    ; id == 9 (INKEY)?
+    lc r2, 9
+    ceq r0, r2
+    brt sys_inkey_j
     ; Unknown sys id — trap
     la r0, op_invalid
     jmp (r0)
 
 ; Jump trampolines for far handlers
+sys_halt_j:
+    la r0, sys_halt
+    jmp (r0)
+sys_putc_j:
+    la r0, sys_putc
+    jmp (r0)
 sys_getc_j:
     la r0, sys_getc
     jmp (r0)
@@ -4511,6 +4521,9 @@ sys_set_irt_j:
     jmp (r0)
 sys_dump_j:
     la r0, sys_dump_state
+    jmp (r0)
+sys_inkey_j:
+    la r0, sys_inkey
     jmp (r0)
 
 ; sys HALT (id=0): stop VM execution
@@ -4556,6 +4569,35 @@ sys_getc_wait:
     la r2, -65280
     lbu r0, 0(r2)
     ; r0 = received byte; push onto eval stack
+    la r2, vm_state
+    push r2
+    pop fp
+    lw r2, 3(fp)
+    ; r2 = esp
+    sw r0, 0(r2)
+    add r2, 3
+    sw r2, 3(fp)
+    la r0, vm_loop
+    jmp (r0)
+
+; sys INKEY (id=9): non-blocking UART read, push byte or -1 if empty
+sys_inkey:
+    la r2, -65280
+    lbu r0, 1(r2)
+    ; bit 0 = RX ready; mask it
+    lc r2, 1
+    and r0, r2
+    ceq r0, z
+    brt sys_inkey_empty
+    ; RX ready — read data byte
+    la r2, -65280
+    lbu r0, 0(r2)
+    bra sys_inkey_push
+sys_inkey_empty:
+    lc r0, 0
+    add r0, -1
+sys_inkey_push:
+    ; r0 = received byte or -1 sentinel; push onto eval stack
     la r2, vm_state
     push r2
     pop fp
@@ -4707,82 +4749,411 @@ sys_read_switch:
     la r0, vm_loop
     jmp (r0)
 
-; sys ALLOC (id=4): pop size, bump-allocate, push pointer
-; Uses nonlocal_temps as scratch: [0]=size, [3]=old hp (return ptr)
-sys_alloc:
-    la r0, vm_state
-    push r0
-    pop fp
-    ; Pop size from eval stack
-    lw r2, 3(fp)
-    add r2, -3
-    sw r2, 3(fp)
-    lw r0, 0(r2)
-    ; r0 = size
-    ; Save size to nonlocal_temps[0]
-    la r2, nonlocal_temps
-    push r2
-    pop fp
-    sw r0, 0(fp)
-    ; Load current hp and save as return pointer to nonlocal_temps[3]
-    la r0, vm_state
-    push r0
-    pop fp
-    lw r0, 15(fp)
-    ; r0 = old hp (allocated pointer)
-    la r2, nonlocal_temps
-    push r2
-    pop fp
-    sw r0, 3(fp)
-    ; Compute new hp = old_hp + size
-    lw r2, 0(fp)
+; ============================================================
+; Heap allocator — free list + first-fit + boundary-tag coalesce
+; ============================================================
+; Block layout (every block carries a header AND matching footer):
+;
+;   ┌────────┬──────────────────────────┬────────┐
+;   │ header │   payload (size-6 bytes) │ footer │
+;   └────────┴──────────────────────────┴────────┘
+;     3 B            (variable)            3 B
+;
+;   header word: bit 23 = FREE bit (1 = free, 0 = allocated)
+;                bits 0..22 = total block size in bytes (incl. tags)
+;   footer word: copy of header (boundary tag for prev-block lookup
+;                during coalesce)
+;
+; When a block is FREE, the first 6 payload bytes hold next/prev
+; pointers in a doubly-linked free list anchored at `free_list_head`.
+; When a block is ALLOCATED those bytes are user-owned payload.
+;
+; User pointer returned by sys_alloc = block_addr + 3 (skip header).
+; Min block size = 12 (header + next + prev + footer).
+;
+; Free reclaims via boundary-tag coalesce: footer-of-prev and
+; header-of-next are read directly to find adjacent free runs.
+; This + free-list reuse makes repeating alloc/free patterns flat.
+
+; heap_set_block — write header at addr and footer at addr+size-3.
+; In: heap_temps[18] = block_addr
+;     heap_temps[21] = block_size (total bytes incl. tags)
+;     heap_temps[24] = flag word (0x800000 for free, 0 for alloc)
+; Clobbers: r0, r2.
+heap_set_block:
+    push r1
+    la r0, heap_temps
+    lw r2, 21(r0)
     ; r2 = size
-    add r0, r2
-    ; r0 = new hp
-    ; Heap overflow check: new hp must be < heap_limit
-    push r0
-    la r2, heap_limit
-    push r2
-    pop fp
-    lw r2, 0(fp)
-    pop r0
-    clu r0, r2
-    brt alloc_no_overflow
+    lw r1, 24(r0)
+    ; r1 = flag
+    or r2, r1
+    ; r2 = header word = size | flag
+    lw r1, 18(r0)
+    ; r1 = addr
+    sw r2, 0(r1)
+    ; *addr = header
+    lw r0, 21(r0)
+    ; r0 = size
+    add r1, r0
+    add r1, -3
+    ; r1 = addr + size - 3
+    sw r2, 0(r1)
+    ; footer = header
+    pop r1
+    jmp (r1)
+
+; heap_list_insert — insert block at head of free list (LIFO).
+; In: heap_temps[18] = block_addr.
+; Clobbers: r0, r2.
+heap_list_insert:
+    push r1
+    la r0, heap_temps
+    lw r1, 18(r0)
+    ; r1 = block_addr
+    la r2, free_list_head
+    lw r2, 0(r2)
+    ; r2 = old_head
+    sw r2, 3(r1)
+    ; block.next = old_head
+    lc r0, 0
+    sw r0, 6(r1)
+    ; block.prev = 0
+    ceq r2, z
+    brt insert_no_oldhead
+    sw r1, 6(r2)
+    ; old_head.prev = block
+insert_no_oldhead:
+    la r0, free_list_head
+    sw r1, 0(r0)
+    ; free_list_head = block
+    pop r1
+    jmp (r1)
+
+; heap_list_remove — unlink block from free list.
+; In: heap_temps[18] = block_addr (must currently be in free list).
+; Uses heap_temps[27] / [30] as scratch for next/prev.
+; Clobbers: r0, r2.
+heap_list_remove:
+    push r1
+    la r0, heap_temps
+    lw r0, 18(r0)
+    ; r0 = block_addr
+    lw r1, 3(r0)
+    ; r1 = block.next
+    lw r2, 6(r0)
+    ; r2 = block.prev
+    la r0, heap_temps
+    sw r1, 27(r0)
+    sw r2, 30(r0)
+    ; Phase 1: connect prev → next  (r1=next, r2=prev)
+    ceq r2, z
+    brt remove_prev_null
+    sw r1, 3(r2)
+    ; prev.next = next
+    la r0, remove_check_next
+    jmp (r0)
+remove_prev_null:
+    la r0, free_list_head
+    sw r1, 0(r0)
+    ; free_list_head = next
+remove_check_next:
+    la r0, heap_temps
+    lw r1, 27(r0)
+    ; r1 = next
+    lw r2, 30(r0)
+    ; r2 = prev
+    ceq r1, z
+    brt remove_done
+    sw r2, 6(r1)
+    ; next.prev = prev
+remove_done:
+    pop r1
+    jmp (r1)
+
+; sys ALLOC (id=4): pop user_size, push ptr to user_size-byte chunk.
+; First fit on free list; falls back to bump (and traps 5 on overflow).
+sys_alloc:
+    ; Pop user_size from eval stack
+    la r0, vm_state
+    lw r2, 3(r0)
+    add r2, -3
+    sw r2, 3(r0)
+    lw r2, 0(r2)
+    ; r2 = user_size
+    ; required = max(user_size + 6, 12)
+    add r2, 6
+    la r0, 12
+    clu r2, r0
+    brf alloc_req_ok
+    mov r2, r0
+alloc_req_ok:
+    la r0, heap_temps
+    sw r2, 0(r0)
+    ; ht[0] = required
+    ; Walk free list (r0 = cursor)
+    la r0, free_list_head
+    lw r0, 0(r0)
+alloc_walk:
+    ceq r0, z
+    brf alloc_walk_have_node
+    ; cursor == 0 → list exhausted; trampoline to bump path
+    la r2, alloc_bump
+    jmp (r2)
+alloc_walk_have_node:
+    lw r1, 0(r0)
+    ; r1 = header
+    la r2, 0x7FFFFF
+    and r1, r2
+    ; r1 = block size
+    la r2, heap_temps
+    lw r2, 0(r2)
+    ; r2 = required
+    clu r1, r2
+    brf alloc_have_fit
+    ; block_size >= required → fits
+    ; Doesn't fit; advance cursor to block.next
+    lw r0, 3(r0)
+    la r2, alloc_walk
+    jmp (r2)
+
+alloc_have_fit:
+    ; r0 = block_addr, r1 = block_size, ht[0] = required
+    la r2, heap_temps
+    sw r0, 3(r2)
+    sw r1, 6(r2)
+    ; Remove block from free list
+    sw r0, 18(r2)
+    la r2, heap_list_remove
+    jal r1, (r2)
+    ; Decide split: remainder = block_size - required
+    la r0, heap_temps
+    lw r1, 6(r0)
+    lw r2, 0(r0)
+    sub r1, r2
+    ; r1 = remainder
+    la r2, 12
+    clu r1, r2
+    brt alloc_no_split
+    ; remainder < 12 → don't split
+    ; ── Split: tag front as alloc, tag remainder as free, insert remainder ──
+    ; (a) tag allocated front
+    la r0, heap_temps
+    lw r1, 3(r0)
+    ; r1 = block_addr
+    lw r2, 0(r0)
+    ; r2 = required
+    sw r1, 18(r0)
+    sw r2, 21(r0)
+    la r1, 0
+    sw r1, 24(r0)
+    ; flag = 0 (alloc)
+    la r2, heap_set_block
+    jal r1, (r2)
+    ; (b) tag remainder as free
+    la r0, heap_temps
+    lw r2, 3(r0)
+    lw r1, 0(r0)
+    add r2, r1
+    ; r2 = remainder_addr = block_addr + required
+    sw r2, 18(r0)
+    lw r2, 6(r0)
+    lw r1, 0(r0)
+    sub r2, r1
+    ; r2 = remainder_size = block_size - required
+    sw r2, 21(r0)
+    la r1, 0x800000
+    sw r1, 24(r0)
+    ; flag = FREE
+    la r2, heap_set_block
+    jal r1, (r2)
+    ; (c) insert remainder at head of free list
+    la r2, heap_list_insert
+    jal r1, (r2)
+    ; ht[18] still = remainder_addr from step (b)
+    la r0, alloc_push_ptr
+    jmp (r0)
+
+alloc_no_split:
+    ; Use whole block. Tag entire block as allocated.
+    la r0, heap_temps
+    lw r1, 3(r0)
+    lw r2, 6(r0)
+    sw r1, 18(r0)
+    sw r2, 21(r0)
+    la r1, 0
+    sw r1, 24(r0)
+    la r2, heap_set_block
+    jal r1, (r2)
+    la r0, alloc_push_ptr
+    jmp (r0)
+
+alloc_bump:
+    ; Free list empty / no fit; bump-allocate above hp.
+    la r0, vm_state
+    lw r1, 15(r0)
+    ; r1 = hp = block_addr
+    la r2, heap_temps
+    sw r1, 3(r2)
+    lw r2, 0(r2)
+    ; r2 = required
+    la r0, heap_temps
+    sw r2, 6(r0)
+    ; ht[6] = block_size = required
+    add r1, r2
+    ; r1 = new_hp
+    ; Heap overflow check: new_hp < heap_limit
+    la r0, heap_limit
+    lw r0, 0(r0)
+    clu r1, r0
+    brt alloc_bump_ok
     lc r0, 5
     la r2, vm_trap
     jmp (r2)
-alloc_no_overflow:
-    ; Store new hp to vm_state.hp
-    la r2, vm_state
-    push r2
-    pop fp
-    sw r0, 15(fp)
-    ; Push old hp (allocated pointer) onto eval stack
-    la r2, nonlocal_temps
-    push r2
-    pop fp
-    lw r0, 3(fp)
-    ; r0 = allocated pointer
-    la r2, vm_state
-    push r2
-    pop fp
-    lw r2, 3(fp)
-    ; r2 = esp
-    sw r0, 0(r2)
+alloc_bump_ok:
+    la r0, vm_state
+    sw r1, 15(r0)
+    ; vm_state.hp = new_hp
+    ; Tag entire bumped block as allocated
+    la r0, heap_temps
+    lw r1, 3(r0)
+    lw r2, 6(r0)
+    sw r1, 18(r0)
+    sw r2, 21(r0)
+    la r1, 0
+    sw r1, 24(r0)
+    la r2, heap_set_block
+    jal r1, (r2)
+    ; fall through to alloc_push_ptr
+
+alloc_push_ptr:
+    ; Push user pointer (block_addr + 3) onto eval stack.
+    la r0, heap_temps
+    lw r1, 3(r0)
+    add r1, 3
+    la r0, vm_state
+    lw r2, 3(r0)
+    sw r1, 0(r2)
     add r2, 3
-    sw r2, 3(fp)
+    sw r2, 3(r0)
     la r0, vm_loop
     jmp (r0)
 
-; sys FREE (id=5): pop ptr, no-op (bump allocator doesn't free)
+; sys FREE (id=5): pop ptr, mark block free, coalesce neighbours, link in.
+; ptr == 0 is a no-op.  Double-free is undefined.
 sys_free:
     la r0, vm_state
-    push r0
-    pop fp
-    ; Pop ptr from eval stack and discard
-    lw r2, 3(fp)
+    lw r2, 3(r0)
     add r2, -3
-    sw r2, 3(fp)
+    sw r2, 3(r0)
+    lw r1, 0(r2)
+    ; r1 = user ptr
+    ceq r1, z
+    brf sys_free_nonnil
+    ; nil free → no-op; trampoline to done
+    la r0, sys_free_done
+    jmp (r0)
+sys_free_nonnil:
+    ; block_addr = ptr - 3
+    add r1, -3
+    ; Read block size (mask off any flag bits in case caller corrupted it)
+    lw r2, 0(r1)
+    la r0, 0x7FFFFF
+    and r2, r0
+    ; r2 = block_size
+    la r0, heap_temps
+    sw r1, 12(r0)
+    sw r2, 15(r0)
+    ; ── Coalesce with NEXT block ──
+    add r1, r2
+    ; r1 = next_addr = block_addr + block_size
+    la r0, vm_state
+    lw r2, 15(r0)
+    ; r2 = hp
+    clu r1, r2
+    brf free_no_next
+    ; next_addr >= hp → no next block
+    lw r0, 0(r1)
+    ; r0 = next.header
+    la r2, 0x800000
+    and r0, r2
+    la r2, 0
+    ceq r0, r2
+    brt free_no_next
+    ; next not free
+    ; Next is free — remove it and merge.
+    la r0, heap_temps
+    sw r1, 18(r0)
+    la r2, heap_list_remove
+    jal r1, (r2)
+    la r0, heap_temps
+    lw r1, 18(r0)
+    ; r1 = next_addr
+    lw r2, 0(r1)
+    la r1, 0x7FFFFF
+    and r2, r1
+    ; r2 = next_size
+    lw r1, 15(r0)
+    add r1, r2
+    sw r1, 15(r0)
+    ; ht[15] += next_size
+free_no_next:
+    ; ── Coalesce with PREV block ──
+    la r0, heap_temps
+    lw r1, 12(r0)
+    la r2, heap_seg
+    clu r2, r1
+    brf free_no_prev
+    ; block_addr <= heap_seg → no prev
+    add r1, -3
+    ; r1 = address of prev's footer
+    lw r2, 0(r1)
+    ; r2 = prev's footer (= prev's header)
+    la r0, 0x800000
+    and r0, r2
+    ; r0 = FREE bit of prev
+    ceq r0, z
+    brt free_no_prev
+    ; prev not free
+    ; Prev is free — compute prev_addr / prev_size, remove, merge.
+    la r0, 0x7FFFFF
+    and r2, r0
+    ; r2 = prev_size
+    la r0, heap_temps
+    lw r1, 12(r0)
+    sub r1, r2
+    ; r1 = prev_addr = block_addr - prev_size
+    sw r1, 18(r0)
+    sw r2, 9(r0)
+    ; ht[9] = prev_size (saved across helper call)
+    la r2, heap_list_remove
+    jal r1, (r2)
+    la r0, heap_temps
+    lw r1, 18(r0)
+    ; r1 = prev_addr
+    sw r1, 12(r0)
+    ; ht[12] = prev_addr (new merged-block addr)
+    lw r2, 9(r0)
+    ; r2 = prev_size
+    lw r1, 15(r0)
+    add r1, r2
+    sw r1, 15(r0)
+    ; ht[15] += prev_size
+free_no_prev:
+    ; Tag merged block as free
+    la r0, heap_temps
+    lw r1, 12(r0)
+    lw r2, 15(r0)
+    sw r1, 18(r0)
+    sw r2, 21(r0)
+    la r1, 0x800000
+    sw r1, 24(r0)
+    la r2, heap_set_block
+    jal r1, (r2)
+    ; Insert at head of free list (ht[18] still = block_addr)
+    la r2, heap_list_insert
+    jal r1, (r2)
+sys_free_done:
     la r0, vm_loop
     jmp (r0)
 
@@ -6116,6 +6487,38 @@ xcall_temps:
     .word 0
     ; [3] target_pc
 
+; Heap allocator state (see allocator block near sys_alloc).
+;
+; free_list_head — head of the doubly-linked free list (0 = empty).
+free_list_head:
+    .word 0
+
+; heap_temps — scratch shared by sys_alloc, sys_free, and helpers.
+; Slot map (keep in sync with allocator code):
+;   [0]  alloc.required
+;   [3]  alloc.block_addr (also bump.block_addr / push_ptr input)
+;   [6]  alloc.block_size
+;   [9]  free.scratch (saved prev_size across heap_list_remove)
+;   [12] free.block_addr (current merged block during coalesce)
+;   [15] free.block_size (current merged size during coalesce)
+;   [18] helper IN/OUT: addr (set_block / list_insert / list_remove)
+;   [21] helper IN: size (set_block)
+;   [24] helper IN: flag word (set_block)
+;   [27] helper scratch: list_remove saved next
+;   [30] helper scratch: list_remove saved prev
+heap_temps:
+    .word 0
+    .word 0
+    .word 0
+    .word 0
+    .word 0
+    .word 0
+    .word 0
+    .word 0
+    .word 0
+    .word 0
+    .word 0
+
 ; ============================================================
 ; heap_limit — heap allocation ceiling.
 ; Default: 0x00F000 (~40KB usable heap above heap_seg).
@@ -6658,7 +7061,9 @@ eval_stack:
     .word 0
     ; 256 words = 768 bytes
 
-; Heap (bump-allocated upward from heap_seg toward heap_limit)
+; Heap (managed by sys_alloc/sys_free; grows upward from heap_seg toward
+; heap_limit via the bump path, with reuse of freed blocks via the free
+; list — see allocator block at sys_alloc).
 ; No pre-allocated data — uses available SRAM between here and heap_limit.
 ; Default heap_limit is 0x00F000 (~40KB usable heap for typical layouts).
 ; Patch heap_limit for more/less heap as needed.

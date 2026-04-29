@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-04-27 -- Real malloc/free with coalescing in the PVM
+
+- Replaced the bump-only `sys_alloc` / no-op `sys_free` pair with a real
+  allocator: every block carries a 3-byte header and matching 3-byte
+  footer (boundary tags). Bit 23 of each tag flags the block as free or
+  allocated; the remaining bits hold the total block size including
+  tags. Min block size is 12 bytes (header + 2 free-list links + footer).
+- `sys_alloc` walks a doubly-linked free list anchored at
+  `free_list_head`, takes the first block large enough, and splits the
+  surplus into a fresh free block when the leftover is at least the
+  minimum size. Falls back to the bump path against `heap_limit` only
+  when no free block fits, so the heap continues to grow only on demand.
+- `sys_free` reads the boundary tags of immediate neighbours to coalesce
+  adjacent free runs (next via `block_addr + size`, prev via the footer
+  at `block_addr - 3`) before linking the merged block at the head of
+  the free list. Nil pointer free is a no-op.
+- Repeating `alloc/free` patterns now stay flat: tree-walking
+  interpreters that previously needed ever-growing `heap_limit` can
+  reclaim per-iteration scratch in place.
+- New test `t19-malloc-reuse.spc` (added to demo.sh) loops 200 ×
+  `alloc(600); free` — exhaustion bait under the old bump allocator
+  (~121 KB requested vs. ~40 KB heap), now flat reuse.
+- pvm.s and pvmasm.s updated in lockstep to preserve parity. Closes #15.
+
 ## 2026-04-16 -- Call stack overflow detection and deeper call stack
 
 - Added call stack bounds checks in op_call, op_calln, op_enter, and
