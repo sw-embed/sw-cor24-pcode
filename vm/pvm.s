@@ -41,8 +41,9 @@ _start:
     la r0, eval_stack
     sw r0, 3(fp)
 
-    ; csp = call_stack base
-    la r0, call_stack
+    ; csp = patchable call stack base
+    la r0, call_stack_base
+    lw r0, 0(r0)
     sw r0, 6(fp)
 
     ; fp_vm = 0 (no frame yet)
@@ -1195,12 +1196,13 @@ op_call:
     ; Build frame header on call stack
     lw r2, 6(fp)
     ; r2 = csp
-    ; Check call stack overflow: csp + 12 must fit below eval_stack.
-    ; On overflow, trap 2 (STACK_OVERFLOW) instead of corrupting eval_stack.
+    ; Check call stack overflow: csp + 12 must fit below call_stack_limit.
+    ; On overflow, trap 2 (STACK_OVERFLOW) instead of corrupting adjacent memory.
     mov r1, r2
     add r1, 12
     push r0
-    la r0, eval_stack
+    la r0, call_stack_limit
+    lw r0, 0(r0)
     clu r1, r0
     brt call_csp_ok
     pop r0
@@ -1392,11 +1394,12 @@ calln_chain_done:
     ; Build frame header on call stack
     lw r2, 6(fp)
     ; r2 = csp
-    ; Check call stack overflow: csp + 12 must fit below eval_stack.
+    ; Check call stack overflow: csp + 12 must fit below call_stack_limit.
     mov r1, r2
     add r1, 12
     push r0
-    la r0, eval_stack
+    la r0, call_stack_limit
+    lw r0, 0(r0)
     clu r1, r0
     brt calln_csp_ok
     pop r0
@@ -1453,8 +1456,9 @@ op_enter:
     ; r0 = nlocals * 3
     lw r2, 6(fp)
     add r2, r0
-    ; Check call stack overflow: new_csp must fit below eval_stack.
-    la r1, eval_stack
+    ; Check call stack overflow: new_csp must fit below call_stack_limit.
+    la r1, call_stack_limit
+    lw r1, 0(r1)
     clu r2, r1
     brt enter_csp_ok
     lc r0, 2
@@ -2469,10 +2473,11 @@ op_xcall:
 
     ; 4. Build call frame on call stack
     lw r2, 6(fp)            ; r2 = csp
-    ; Check call stack overflow: csp + 12 must fit below eval_stack.
+    ; Check call stack overflow: csp + 12 must fit below call_stack_limit.
     mov r1, r2
     add r1, 12
-    la r0, eval_stack
+    la r0, call_stack_limit
+    lw r0, 0(r0)
     clu r1, r0
     brt xcall_csp_ok
     lc r0, 2
@@ -3631,6 +3636,14 @@ vm_flags:
 heap_limit:
     .word 0x00F000
 
+; call_stack_base / call_stack_limit — patchable call-stack bounds.
+; Defaults preserve the in-image stack. Runners with spare SRAM can patch
+; these to an external half-open range, e.g. 0x0FC000..0x100000.
+call_stack_base:
+    .word call_stack
+call_stack_limit:
+    .word call_stack_end
+
 ;   DIV_ZERO:       push_s 1, push_s 0, div  → TRAP 1
 ;   STACK_OVERFLOW: (fill stack past limit)   → TRAP 2
 ;   STACK_UNDERFLOW: drop (on empty stack)    → TRAP 3
@@ -3837,6 +3850,7 @@ call_stack:
     .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
     ; 128 lines x 32 bytes = 4096 bytes
+call_stack_end:
 
 ; Eval stack (grows upward, 1536 bytes)
 eval_stack:

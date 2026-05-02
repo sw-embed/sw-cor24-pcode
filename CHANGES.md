@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-05-02 -- Patchable PVM call-stack bounds
+
+- Added patchable `call_stack_base` and `call_stack_limit` words to
+  `pvm.s` and `pvmasm.s`. Defaults still point at the in-image call
+  stack, preserving embedded/small-stack behavior.
+- VM startup now initializes `csp` from `call_stack_base`.
+- `op_call`, `op_calln`, `op_enter`, and `op_xcall` now guard against
+  `call_stack_limit` instead of the hard-coded `eval_stack` address.
+  Runners with spare SRAM can patch a high range such as
+  `0x0FC000..0x100000` for larger recursive/checker workloads. Closes #17.
+
 ## 2026-04-27 -- Real malloc/free with coalescing in the PVM
 
 - Replaced the bump-only `sys_alloc` / no-op `sys_free` pair with a real
